@@ -441,6 +441,47 @@
       renderGrid();
     }
 
+    // Display-only token renderer for grid cells (keeps CSV/export unchanged)
+    function displayTokenForGrid(raw, scopeId) {
+      const s = String(raw || '');
+      if (!s) return s;
+      // Only map track-like tokens to compact glyphs
+      const base = stripPropsAndCfg(s);
+      const m = /^(track)(ramp)?([NSEW]+)$/i.exec(base);
+      if (!m) return s;
+      const isRamp = !!m[2];
+      // Canonicalize direction set
+      const dirsSet = new Set(m[3].toUpperCase().split(''));
+      const hasN = dirsSet.has('N');
+      const hasS = dirsSet.has('S');
+      const hasE = dirsSet.has('E');
+      const hasW = dirsSet.has('W');
+      // Single-direction
+      if ((hasN?1:0)+(hasS?1:0)+(hasE?1:0)+(hasW?1:0) === 1) {
+        if (hasN) return isRamp ? '▲' : '↑';
+        if (hasS) return isRamp ? '▼' : '↓';
+        if (hasE) return isRamp ? '▶' : '→';
+        if (hasW) return isRamp ? '◀' : '←';
+      }
+      // Straight lines
+      if (hasN && hasS && !hasE && !hasW) return isRamp ? '║' : '│';
+      if (!hasN && !hasS && hasE && hasW) return isRamp ? '═' : '─';
+      // Corners
+      if (hasN && hasE && !hasS && !hasW) return isRamp ? '╚' : '└';
+      if (hasN && hasW && !hasS && !hasE) return isRamp ? '╝' : '┘';
+      if (hasS && hasE && !hasN && !hasW) return isRamp ? '╔' : '┌';
+      if (hasS && hasW && !hasN && !hasE) return isRamp ? '╗' : '┐';
+      // T junctions
+      if (hasN && hasS && hasE && !hasW) return isRamp ? '╠' : '├'; // missing W
+      if (hasN && hasS && hasW && !hasE) return isRamp ? '╣' : '┤'; // missing E
+      if (hasN && hasE && hasW && !hasS) return isRamp ? '╩' : '┴'; // missing S
+      if (hasS && hasE && hasW && !hasN) return isRamp ? '╦' : '┬'; // missing N
+      // 4-way
+      if (hasN && hasS && hasE && hasW) return isRamp ? '╬' : '┼';
+      // Fallback to original
+      return s;
+    }
+
     function renderGrid() {
       const mat = getMatrix(state.activeTab, state.activeZ);
       gridEl.innerHTML = '';
@@ -451,7 +492,8 @@
           const td = document.createElement('td');
           td.dataset.r = r; td.dataset.c = c;
           const val = mat[r][c];
-          td.textContent = val;
+          // Display compact glyphs for tracks only; keep underlying token unchanged
+          td.textContent = displayTokenForGrid(val, state.activeTab);
           styleCell(td, val, state.activeTab);
           // dig guidance overlay on non-dig tabs
           if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
@@ -565,7 +607,9 @@
       if (tr) {
         const td = tr.cells[c];
         if (td) {
-          td.textContent = val; styleCell(td, val, state.activeTab);
+          // Use display mapping so arrows appear immediately on paint
+          td.textContent = displayTokenForGrid(val, state.activeTab);
+          styleCell(td, val, state.activeTab);
           if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
         }
       }
@@ -879,7 +923,8 @@
         for (let c = 0; c < mat[0].length; c++) {
           const td = document.createElement('td');
           const val = mat[r][c];
-          td.textContent = val;
+          // Use same display mapping in previews
+          td.textContent = displayTokenForGrid(val, scopeId);
           styleCell(td, val, scopeId);
           if (scopeId !== 'dig') maybeApplyDigOverlay(td, r, c);
           tr.appendChild(td);
