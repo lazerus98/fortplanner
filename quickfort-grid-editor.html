@@ -40,6 +40,8 @@
     .gridwrap { overflow: auto; background: #0e0e13; padding: 12px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
     table.grid { border-collapse: collapse; background: var(--grid); table-layout: fixed; }
     table.grid td { width: calc(var(--cell-size) * var(--zoom)); height: calc(var(--cell-size) * var(--zoom)); line-height: calc(var(--cell-size) * var(--zoom)); text-align: center; vertical-align: middle; white-space: nowrap; overflow: hidden; background: var(--cell); color: var(--fg); border: 1px solid #1a1a21; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: calc(var(--cell-font) * var(--zoom)); user-select: none; position: relative; }
+    /* Slightly smaller text for property-heavy tokens (display-only) */
+    table.grid td.mini-token { font-size: calc(var(--cell-font) * var(--zoom) * 0.85) !important; }
     table.grid td:hover { background: var(--cell-hover); }
     table.grid td.active { background: var(--cell-active); }
     .statusbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-top: 1px solid var(--muted); background: var(--panel); color: var(--fg2); font-size: 12px; }
@@ -445,7 +447,12 @@
     function displayTokenForGrid(raw, scopeId) {
       const s = String(raw || '');
       if (!s) return s;
-      // Only map track-like tokens to compact glyphs
+      // For stockpiles/zones with properties, show base-only for compact display
+      if (scopeId === 'place' || scopeId === 'zone') {
+        const base = stripPropsAndCfg(s);
+        if (base && base !== s) return base;
+      }
+      // Map track-like tokens to compact glyphs
       const base = stripPropsAndCfg(s);
       const m = /^(track)(ramp)?([NSEW]+)$/i.exec(base);
       if (!m) return s;
@@ -1136,6 +1143,39 @@
       return `linear-gradient(90deg, ${stops.join(', ')})`;
     }
 
+    // --- Unique text color helper (display-only) ---
+    function hashHue(str) {
+      let h = 0;
+      for (let i=0;i<str.length;i++) h = (h * 31 + str.charCodeAt(i)) % 360;
+      return h;
+    }
+    function hslToHex(h, s, l) {
+      s /= 100; l /= 100;
+      const k = n => (n + h/30) % 12;
+      const a = s * Math.min(l, 1 - l);
+      const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+      const r = Math.round(255 * f(0));
+      const g = Math.round(255 * f(8));
+      const b = Math.round(255 * f(4));
+      return '#' + [r,g,b].map(x => x.toString(16).padStart(2,'0')).join('');
+    }
+    function hexToRgb(hex) {
+      const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex||'');
+      if (!m) return {r:68,g:68,b:68};
+      return { r: parseInt(m[1],16)/255, g: parseInt(m[2],16)/255, b: parseInt(m[3],16)/255 };
+    }
+    function luminanceOfHex(hex) {
+      const {r,g,b} = hexToRgb(hex);
+      return 0.2126*r + 0.7152*g + 0.0722*b;
+    }
+    function uniqueTextColorForKey(key, bgHex) {
+      const hue = hashHue(key);
+      const bgLum = luminanceOfHex(bgHex || '#444');
+      // pick lightness based on background brightness for contrast
+      const light = bgLum < 0.5 ? 70 : 30;
+      return hslToHex(hue, 70, light);
+    }
+
     function isPlaceholderToken(raw) {
       const t = String(raw||'').trim();
       if (!t) return true; // empty
@@ -1147,6 +1187,7 @@
       // reset
       td.style.background = 'var(--cell)';
       td.style.color = 'var(--fg)';
+      td.classList.remove('mini-token');
       const s = String(val||'');
       if (!s) return;
       if (isPlaceholderToken(s)) return; // keep dark styling for placeholders
@@ -1159,6 +1200,7 @@
       }
       if (scopeId === 'place') {
         const base = stripPropsAndCfg(s);
+        const hasProps = base !== s;
         // multi-type combo: use gradient
         const letters = base.split('');
         const grad = gradientForLetters(letters, COLOR_PLACE);
@@ -1166,15 +1208,39 @@
           td.style.background = grad;
           // pick text color based on first color
           const first = COLOR_PLACE[letters[0]] || '#444';
-          ensureReadableText(td, first);
+          if (hasProps) {
+            td.classList.add('mini-token');
+            td.style.color = uniqueTextColorForKey(s, first);
+          } else {
+            ensureReadableText(td, first);
+          }
+        } else {
+          // single-type with no mapping; fallback color handling
+          const first = COLOR_PLACE[letters[0]] || '#444';
+          td.style.background = first;
+          if (hasProps) {
+            td.classList.add('mini-token');
+            td.style.color = uniqueTextColorForKey(s, first);
+          } else {
+            ensureReadableText(td, first);
+          }
         }
         return;
       }
       if (scopeId === 'zone') {
         const base = stripPropsAndCfg(s);
+        const hasProps = base !== s;
         const key = base.charAt(0);
         const col = COLOR_ZONE[key];
-        if (col) { td.style.background = col; ensureReadableText(td, col); }
+        if (col) {
+          td.style.background = col;
+          if (hasProps) {
+            td.classList.add('mini-token');
+            td.style.color = uniqueTextColorForKey(s, col);
+          } else {
+            ensureReadableText(td, col);
+          }
+        }
         return;
       }
       if (scopeId === 'burrow') {
@@ -1569,7 +1635,8 @@
       title.textContent = label || val;
       const small = document.createElement('small');
       small.className = 'token-pill';
-      small.textContent = val || ' ';
+      // Show display glyphs (e.g., arrows for tracks) in the pill
+      small.textContent = displayTokenForGrid(val, 'dig') || ' ';
       if (color) { small.style.background = color; ensureReadableText(small, color); }
       d.appendChild(title);
       d.appendChild(small);
@@ -1584,7 +1651,8 @@
       title.textContent = label || val;
       const small = document.createElement('small');
       small.className = 'token-pill';
-      small.textContent = val;
+      // Show display glyphs (e.g., arrows for tracks) in the pill
+      small.textContent = displayTokenForGrid(val, 'build');
       const base = stripPropsAndCfg(val);
       const col = getBuildColorForToken(base);
       if (col) {
