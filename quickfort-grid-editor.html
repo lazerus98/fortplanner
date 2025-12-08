@@ -1,0 +1,1621 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Quickfort Grid Editor</title>
+  <style>
+    :root { --bg:#0f0f12; --panel:#17171c; --muted:#2a2a32; --fg:#e6e6e9; --fg2:#b8b8c2; --accent:#22c55e; --accent2:#7ee081; --warn:#ffbd5c; --bad:#ff6b6b; --grid:#2a2a32; --cell:#1f1f26; --cell-hover:#23232b; --cell-active:#333344; --tab-bg:#14141a; --zoom:1; --cell-size:24px; --cell-font:12px; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Liberation Sans", sans-serif; background: var(--bg); color: var(--fg); }
+    header { padding: 12px 16px; border-bottom: 1px solid var(--muted); background: var(--panel); display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+    header .spacer { flex: 1; }
+    header .controls { display: flex; gap: 8px; align-items: center; position: relative; }
+    header input[type=number] { width: 84px; padding: 6px 8px; background: var(--cell); border: 1px solid var(--muted); color: var(--fg); border-radius: 6px; }
+    /* Hide native number spinners */
+    input[type=number]::-webkit-outer-spin-button,
+    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+    header button { padding: 8px 10px; background: var(--accent); color: #021018; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+    header button.secondary { background: var(--muted); color: var(--fg2); }
+    main { display: grid; grid-template-columns: 280px 1fr; gap: 0; height: calc(100% - 54px); }
+    aside { border-right: 1px solid var(--muted); background: var(--panel); overflow: auto; }
+    .tools { padding: 12px; }
+    .section { margin-bottom: 16px; }
+    .section h3 { margin: 10px 0 8px; font-size: 13px; font-weight: 700; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.06em; }
+    .tool-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 6px; }
+    .tool { background: var(--cell); border: 1px solid var(--muted); padding: 8px; border-radius: 8px; cursor: pointer; font-size: 13px; text-align: center; color: var(--fg); }
+    .tool small { display: block; color: var(--fg2); margin-top: 2px; font-size: 11px; }
+    .tool.active { outline: 2px solid var(--accent); background: #13232d; }
+    .tool.custom { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }
+    .tool.custom input { padding: 8px; background: var(--cell); border: 1px solid var(--muted); color: var(--fg); border-radius: 8px; }
+    .tool.custom button { background: var(--accent2); color: #07200d; border: none; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-weight: 700; }
+    .tool small.token-pill { display: inline-block; margin-top: 4px; padding: 2px 6px; border-radius: 999px; background: var(--muted); color: var(--fg2); }
+    .tabs { display: flex; background: var(--tab-bg); border-bottom: 1px solid var(--muted); }
+    .tabs button { flex: 0 0 auto; background: transparent; border: none; padding: 10px 14px; color: var(--fg2); cursor: pointer; font-weight: 600; border-bottom: 2px solid transparent; }
+    .tabs button.active { color: var(--fg); border-bottom: 2px solid var(--accent); }
+    .workspace { display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
+    .gridwrap { overflow: auto; background: #0e0e13; padding: 12px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
+    table.grid { border-collapse: collapse; background: var(--grid); table-layout: fixed; }
+    table.grid td { width: calc(var(--cell-size) * var(--zoom)); height: calc(var(--cell-size) * var(--zoom)); line-height: calc(var(--cell-size) * var(--zoom)); text-align: center; vertical-align: middle; white-space: nowrap; overflow: hidden; background: var(--cell); color: var(--fg); border: 1px solid #1a1a21; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: calc(var(--cell-font) * var(--zoom)); user-select: none; position: relative; }
+    table.grid td:hover { background: var(--cell-hover); }
+    table.grid td.active { background: var(--cell-active); }
+    .statusbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-top: 1px solid var(--muted); background: var(--panel); color: var(--fg2); font-size: 12px; }
+    .statusbar .actions { display: flex; gap: 8px; }
+    .statusbar .actions button { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--muted); background: var(--cell); color: var(--fg); cursor: pointer; }
+    .statusbar .actions button.primary { background: var(--accent); color: #06121a; border: none; font-weight: 700; }
+    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; padding: 2px 6px; border: 1px solid var(--muted); border-bottom-width: 2px; border-radius: 6px; background: var(--cell); color: var(--fg2); }
+    .note { color: var(--fg2); font-size: 12px; }
+    /* Preview styling */
+    .preview { opacity: 0.55; pointer-events: none; filter: saturate(85%); }
+    .preview table.grid td { /* static 80% of main grid size */
+      width: calc(var(--cell-size) * var(--zoom) * 0.8);
+      height: calc(var(--cell-size) * var(--zoom) * 0.8);
+      line-height: calc(var(--cell-size) * var(--zoom) * 0.8);
+      font-size: calc(var(--cell-font) * var(--zoom) * 0.8);
+      background: var(--cell);
+    }
+    /* South (below) preview should take full row width */
+    .preview.south { flex: 1 0 100%; width: 100%; display: flex; }
+    /* Dig overlay: subtle crosshatch fill + dashed green border */
+    .dig-overlay { position: absolute; inset: 0; box-sizing: border-box; border: 1px dashed #22c55e; background-image:
+        repeating-linear-gradient(45deg, rgba(34,197,94,0.15) 0 8px, transparent 8px 16px),
+        repeating-linear-gradient(-45deg, rgba(34,197,94,0.10) 0 8px, transparent 8px 16px);
+      pointer-events: none; }
+    .hidden { display: none; }
+    .hint { color: var(--warn); }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .row input[type=text] { flex: 1; padding: 8px; background: var(--cell); border: 1px solid var(--muted); color: var(--fg); border-radius: 8px; }
+    /* Help popover */
+    .popover { position: absolute; right: 0; top: calc(100% + 8px); background: var(--panel); color: var(--fg2); border: 1px solid var(--muted); border-radius: 8px; padding: 8px 10px; font-size: 12px; width: max-content; max-width: 260px; box-shadow: 0 6px 18px rgba(0,0,0,0.25); z-index: 10; }
+    .popover strong { color: var(--fg); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Quickfort Grid Editor</h1>
+    <div class="spacer"></div>
+    <div class="controls">
+      <label>Columns <input id="cols" type="number" min="1" max="300" value="30" /></label>
+      <button id="cols-dec" class="secondary" title="Decrease columns">-</button>
+      <button id="cols-inc" title="Increase columns">+</button>
+      <label>Rows <input id="rows" type="number" min="1" max="300" value="20" /></label>
+      <button id="rows-dec" class="secondary" title="Decrease rows">-</button>
+      <button id="rows-inc" title="Increase rows">+</button>
+      <div class="row" style="align-items:center; gap:6px;">
+        <span id="zoom-label" class="note" style="min-width:56px; display:inline-block; text-align:center;">100%</span>
+        <button id="zoom-out" class="secondary" title="Zoom out (Ctrl+-)">-</button>
+        <button id="zoom-in" title="Zoom in (Ctrl+=)">+</button>
+      </div>
+      <div class="row" style="align-items:center; gap:6px; margin-left:6px;">
+        <span id="z-label" class="note" style="min-width:56px; display:inline-block; text-align:center;">Z1/1</span>
+        <button id="z-down" class="secondary" title="Down one z-level">Z-</button>
+        <button id="z-up" title="Up one z-level">Z+</button>
+        <button id="z-add" class="secondary" title="Add new z-level">Add Z</button>
+        <button id="z-del" class="secondary" title="Delete current z-level">Del Z</button>
+      </div>
+      <label>Brush <input id="brush-size" type="number" min="1" max="25" value="1" /></label>
+      <button id="brush-dec" class="secondary" title="Decrease brush">-</button>
+      <button id="brush-inc" title="Increase brush">+</button>
+      <label style="margin-left:8px;"><input id="preview-toggle" type="checkbox" checked /> Preview</label>
+      <button id="cleargrid" class="secondary">Clear Current Grid</button>
+      <button id="help-btn" class="secondary" title="Usage help">?</button>
+      <div id="help-pop" class="popover hidden">
+        Left-click paint, right-click erase, drag to paint.
+      </div>
+    </div>
+  </header>
+  <main>
+    <aside>
+      <div class="tools">
+        
+
+        <div class="section" data-tools="dig">
+          <h3>Dig Tools</h3>
+          <div class="row" style="margin:6px 0 10px; gap:12px; align-items:center;">
+            <label><input type="checkbox" id="dig-mb"> Blueprint</label>
+            <label><input type="checkbox" id="dig-mw"> Warm</label>
+            <label><input type="checkbox" id="dig-md"> Damp</label>
+            <label>Priority
+              <select id="dig-priority" style="margin-left:6px; padding:4px 6px; background: var(--cell); border:1px solid var(--muted); color: var(--fg); border-radius:6px;">
+                <option value="">none</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+                <option value="7">7</option>
+              </select>
+            </label>
+          </div>
+          <div class="section" style="margin:0 0 8px;">
+            <div class="tool-grid" id="dig-basic"></div>
+          </div>
+          <div class="section" style="margin:0 0 8px;">
+            <h3>Item/Traffic</h3>
+            <div class="tool-grid" id="dig-flags"></div>
+          </div>
+          <div class="section" style="margin:0 0 8px;">
+            <h3>Tracks (carved)</h3>
+            <div class="tool-grid" id="dig-tracks"></div>
+          </div>
+          <div class="tool custom" style="margin-top:8px;">
+            <input type="text" placeholder="custom dig token (e.g., mdh5(10x10) or just 3)" />
+            <button data-apply-custom>Use</button>
+          </div>
+        </div>
+
+        <div class="section" data-tools="build">
+          <h3>Build Tools</h3>
+          <div class="row" style="margin-bottom:8px;">
+            <input id="build-search" type="text" placeholder="Search (e.g., 'bed', 'wc', 'trackstopN')" />
+          </div>
+          <div id="build-groups"></div>
+          <div class="tool custom" style="margin-top:8px;">
+            <input type="text" placeholder="custom build token (e.g., Tl, wc, Cw, trackstopN{friction=500})" />
+            <button data-apply-custom>Use</button>
+          </div>
+          <div class="note">Use exact tokens per DFHack build reference. Search filters the lists below.</div>
+        </div>
+
+        <div class="section" data-tools="place">
+          <h3>Stockpiles (#place)</h3>
+          <div class="tool-grid" id="place-stockpiles"></div>
+
+          <div class="section" data-tools="place" style="margin-top:8px;">
+            <h3>Multi-type stockpile</h3>
+            <div id="place-multi-checks" class="tool-grid"></div>
+            <div class="row" style="margin-top:8px;">
+              <button id="place-multi-apply">Use selected types</button>
+            </div>
+            <div class="note">Build combined stockpiles like yr (corpses + refuse).</div>
+          </div>
+
+          <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+            <input id="place-name" type="text" placeholder="name (e.g. Seeds)" />
+            <input id="place-take-from" type="text" placeholder="take_from (comma-separated stockpile names)" />
+            <input id="place-give-to" type="text" placeholder="give_to (comma-separated stockpile names)" />
+          </div>
+
+          <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+            <input id="place-barrels" type="number" min="0" placeholder="barrels" />
+            <input id="place-bins" type="number" min="0" placeholder="bins" />
+            <input id="place-wheelbarrows" type="number" min="0" placeholder="wheelbarrows" />
+            <input id="place-containers" type="number" min="0" placeholder="containers" />
+          </div>
+
+          <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap; align-items:center;">
+            <label><input id="place-links-only" type="checkbox" /> links_only</label>
+            <label><input id="place-quantum" type="checkbox" /> quantum</label>
+            <label><input id="place-automelt" type="checkbox" /> automelt</label>
+            <label><input id="place-autotrade" type="checkbox" /> autotrade</label>
+            <label><input id="place-autodump" type="checkbox" /> autodump</label>
+            <label><input id="place-autotrain" type="checkbox" /> autotrain</label>
+          </div>
+
+          <div class="row" style="margin-top:8px;">
+            <input id="place-config" type="text" placeholder=":=configuration (e.g. seeds, booze)" />
+          </div>
+
+          <div class="row" style="margin-top:8px;">
+            <input id="place-extent" type="text" placeholder="extent (e.g. 3x3 or (11x1))" />
+          </div>
+
+          <div class="row" style="margin-top:8px;">
+            <input id="place-props" type="text" placeholder="extra props, e.g. desired_goblets=20 desired_soap=10" />
+          </div>
+
+          <div class="note">Structured fields build properties like {name=..., barrels=..., links_only=true}. Extra props are appended as-is. :=configuration is appended after properties.</div>
+        </div>
+
+        <div class="section" data-tools="zone">
+          <h3>Zones</h3>
+          <div class="tool-grid" id="zone-types"></div>
+          <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+            <input id="zone-name" type="text" placeholder="name (e.g. Dining)" />
+            <select id="zone-location">
+              <option value="">location (none)</option>
+              <option value="tavern">tavern</option>
+              <option value="inn">inn</option>
+              <option value="temple">temple</option>
+              <option value="library">library</option>
+              <option value="guildhall">guildhall</option>
+              <option value="hospital">hospital</option>
+            </select>
+            <input id="zone-location-name" type="text" placeholder="location name (e.g. mainpub)" />
+            <input id="zone-profession" type="text" placeholder="profession (for guildhall)" />
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="zone-props" type="text" placeholder="extra props, e.g. desired_goblets=20 desired_suture=10" />
+          </div>
+          <div class="note">Structured fields build {name=..., location=tavern/mainpub}. Extra props appended as-is.</div>
+        </div>
+
+        <div class="section" data-tools="burrow">
+          <h3>Burrows</h3>
+          <div class="tool-grid" id="burrow-types"></div>
+          <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+            <input id="burrow-name" type="text" placeholder="name (e.g. Safe)" />
+            <label><input id="burrow-create" type="checkbox" /> create</label>
+            <input id="burrow-civalert" type="text" placeholder="civalert (e.g. Siege)" />
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="burrow-props" type="text" placeholder="extra props, e.g. autochop_wood=true" />
+          </div>
+          <div class="note">Structured fields build {name=..., create=true, civalert=...}. Extra props support autochop_* and others.</div>
+        </div>
+
+        <div class="section" data-tools="query">
+          <h3>Query (q: settings)</h3>
+          <div class="tool-grid">
+            <div class="tool" data-tool="q:settings">Settings<small>q:settings</small></div>
+            <div class="tool" data-tool="q:link">Link<small>q:link</small></div>
+            <div class="tool" data-tool="q:profile">Profile<small>q:profile</small></div>
+            <div class="tool" data-tool="">Eraser<small>blank</small></div>
+            <div class="tool custom">
+              <input type="text" placeholder="custom query token (e.g., q:take-from:SP name)" />
+              <button data-apply-custom>Use</button>
+            </div>
+          </div>
+          <div class="note hint">Query strings vary widely; use custom text to encode exact quickfort commands.</div>
+        </div>
+      </div>
+    </aside>
+    <section class="workspace">
+      <div class="tabs" id="tabs"></div>
+      <div class="gridwrap"><table class="grid" id="grid"></table></div>
+      <div class="statusbar">
+        <div>
+          <span>Active: <strong id="active-tab-label">dig</strong></span>
+          <span> | Tool: <span class="kbd" id="active-tool">d</span></span>
+          <span id="pos" class="note"></span>
+        </div>
+        <div class="actions">
+          <button id="copycsv">Copy to clipboard</button>
+          <button id="downloadcsv" class="primary">Download CSV</button>
+          <button id="exportall" class="secondary">Export All</button>
+          <button id="loadcsv" class="secondary">Load</button>
+          <input id="fileinput" type="file" accept=".csv,.txt" style="display:none" />
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Blueprint tabs and their quickfort type headers
+    const Tabs = [
+      { id: 'dig', label: 'Dig', header: '#dig' },
+      { id: 'build', label: 'Build', header: '#build' },
+      { id: 'place', label: 'Stockpiles', header: '#place' },
+      { id: 'zone', label: 'Zones', header: '#zone' },
+      { id: 'burrow', label: 'Burrows', header: '#burrow' },
+      { id: 'query', label: 'Query', header: '#query' },
+    ];
+
+    const defaultCols = 30;
+    const defaultRows = 20;
+
+    const state = {
+      cols: defaultCols,
+      rows: defaultRows,
+      activeTab: 'dig',
+      activeZ: 0,       // active z-level index (0-based)
+      zCount: 1,        // total number of z-levels
+      // per-tab array of matrices, length == zCount
+      grids: {},        // { [tabId]: Array<Matrix> }
+      // tool selection scoped per tab
+      selectedToolByTab: {},
+      painting: false,
+      lastPaintVal: '',
+      zoom: 1,
+      brushSize: 1,
+      previewEnabled: true,
+    };
+
+    const gridEl = document.getElementById('grid');
+    const gridWrapEl = document.querySelector('.gridwrap');
+    const tabsEl = document.getElementById('tabs');
+    const activeTabLbl = document.getElementById('active-tab-label');
+    const activeToolLbl = document.getElementById('active-tool');
+    const posLbl = document.getElementById('pos');
+
+    // init data structures
+    function makeMatrix(rows, cols) {
+      return Array.from({length: rows}, () => Array.from({length: cols}, () => ''));
+    }
+
+    function ensureGrids() {
+      Tabs.forEach(t => {
+        if (!state.grids[t.id]) state.grids[t.id] = [];
+        // ensure one matrix per z-level
+        while (state.grids[t.id].length < state.zCount) {
+          state.grids[t.id].push(makeMatrix(state.rows, state.cols));
+        }
+        if (!state.selectedToolByTab[t.id]) state.selectedToolByTab[t.id] = '';
+      });
+      clampActiveZ();
+    }
+
+    function getMatrix(tabId = state.activeTab, z = state.activeZ) {
+      ensureGrids();
+      return state.grids[tabId][z];
+    }
+
+    function setMatrix(tabId, z, matrix) {
+      ensureGrids();
+      state.grids[tabId][z] = matrix;
+    }
+
+    function clampActiveZ() {
+      if (state.zCount < 1) state.zCount = 1;
+      if (state.activeZ < 0) state.activeZ = 0;
+      if (state.activeZ >= state.zCount) state.activeZ = state.zCount - 1;
+    }
+
+    function clampSize() {
+      const cols = Math.max(1, Math.min(300, parseInt(document.getElementById('cols').value || defaultCols, 10)));
+      const rows = Math.max(1, Math.min(300, parseInt(document.getElementById('rows').value || defaultRows, 10)));
+      state.cols = cols; state.rows = rows;
+    }
+
+    function resizeAllGrids(newRows, newCols) {
+      Tabs.forEach(t => {
+        const layers = state.grids[t.id] || [];
+        for (let z = 0; z < layers.length; z++) {
+          const old = layers[z];
+          const next = makeMatrix(newRows, newCols);
+          for (let r=0; r<Math.min(old.length, newRows); r++) {
+            for (let c=0; c<Math.min(old[0].length, newCols); c++) next[r][c] = old[r][c];
+          }
+          layers[z] = next;
+        }
+        state.grids[t.id] = layers;
+      });
+    }
+
+    function setGridSize(newRows, newCols) {
+      const rows = Math.max(1, Math.min(300, parseInt(newRows, 10) || 1));
+      const cols = Math.max(1, Math.min(300, parseInt(newCols, 10) || 1));
+      if (rows === state.rows && cols === state.cols) return;
+      state.rows = rows; state.cols = cols;
+      const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(cols);
+      const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(rows);
+      resizeAllGrids(rows, cols);
+      renderGrid();
+    }
+
+    function renderTabs() {
+      tabsEl.innerHTML = '';
+      Tabs.forEach(t => {
+        const b = document.createElement('button');
+        b.textContent = t.label;
+        b.className = t.id === state.activeTab ? 'active' : '';
+        b.addEventListener('click', () => setActiveTab(t.id));
+        tabsEl.appendChild(b);
+      })
+    }
+
+    function setActiveTab(id) {
+      state.activeTab = id;
+      renderTabs();
+      activeTabLbl.textContent = Tabs.find(t => t.id === id).label.toLowerCase();
+      // show tools for active tab only
+      document.querySelectorAll('aside .section').forEach(sec => {
+        const scope = sec.getAttribute('data-tools');
+        if (!scope) return;
+        sec.classList.toggle('hidden', scope !== id);
+      });
+      // restore active tool label
+      activeToolLbl.textContent = state.selectedToolByTab[id] || 'blank';
+      renderGrid();
+    }
+
+    function renderGrid() {
+      const mat = getMatrix(state.activeTab, state.activeZ);
+      gridEl.innerHTML = '';
+      for (let r = 0; r < mat.length; r++) {
+        const row = document.createElement('tr');
+        for (let c = 0; c < mat[0].length; c++) {
+          const td = document.createElement('td');
+          td.dataset.r = r; td.dataset.c = c;
+          const val = mat[r][c];
+          td.textContent = val;
+          styleCell(td, val, state.activeTab);
+          // dig guidance overlay on non-dig tabs
+          if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
+          td.addEventListener('mousedown', (e) => onCellDown(e, r, c));
+          td.addEventListener('mouseenter', (e) => onCellEnter(e, r, c));
+          td.addEventListener('mousemove', () => posLbl.textContent = ` | R${r+1}C${c+1}`);
+          td.addEventListener('contextmenu', (e) => { e.preventDefault(); applyBrushAt(r, c, ''); });
+          row.appendChild(td);
+        }
+        gridEl.appendChild(row);
+      }
+      // After rendering the active grid, try to show a faded preview of the next grid (if space allows)
+      maybeRenderPreview();
+    }
+
+    // Zoom handling (shared across all tabs)
+    const MIN_ZOOM = 0.5;
+    const MAX_ZOOM = 3;
+    const ZOOM_STEP = 0.1;
+    function applyZoom() {
+      const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, state.zoom));
+      state.zoom = z;
+      document.documentElement.style.setProperty('--zoom', String(z));
+      const lbl = document.getElementById('zoom-label');
+      if (lbl) lbl.textContent = `${Math.round(z*100)}%`;
+      // Re-evaluate preview visibility when zoom changes
+      maybeRenderPreview();
+    }
+    function zoomIn() { state.zoom = +(state.zoom + ZOOM_STEP).toFixed(2); applyZoom(); }
+    function zoomOut() { state.zoom = +(state.zoom - ZOOM_STEP).toFixed(2); applyZoom(); }
+    function resetZoom() { state.zoom = 1; applyZoom(); }
+
+    function onCellDown(e, r, c) {
+      e.preventDefault();
+      state.painting = true;
+      const tool = state.selectedToolByTab[state.activeTab] || '';
+      state.lastPaintVal = (e.button === 2) ? '' : tool; // right-click erase
+      applyBrushAt(r, c, state.lastPaintVal);
+      document.addEventListener('mouseup', onMouseUpOnce, { once: true });
+    }
+    function onCellEnter(e, r, c) {
+      if (!state.painting) return;
+      applyBrushAt(r, c, state.lastPaintVal);
+    }
+    function onMouseUpOnce() { state.painting = false; }
+
+    function applyTool(r, c, val) {
+      const mat = getMatrix(state.activeTab, state.activeZ);
+      if (r < 0 || c < 0 || r >= mat.length || c >= mat[0].length) return;
+      mat[r][c] = val;
+      // update cell in DOM
+      const tr = gridEl.rows[r];
+      if (tr) {
+        const td = tr.cells[c];
+        if (td) {
+          td.textContent = val; styleCell(td, val, state.activeTab);
+          if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
+        }
+      }
+      // Refresh previews so they reflect changes (esp. dig overlay)
+      maybeRenderPreview();
+    }
+
+    function getBrushSize() {
+      const input = document.getElementById('brush-size');
+      const raw = parseInt(input?.value || state.brushSize || 1, 10);
+      return Math.max(1, Math.min(25, isNaN(raw) ? 1 : raw));
+    }
+
+    function applyBrushAt(r, c, val) {
+      const size = getBrushSize();
+      if (size <= 1) { applyTool(r, c, val); return; }
+      const half = Math.floor((size - 1) / 2);
+      const r0 = r - half;
+      const c0 = c - half;
+      const r1 = r0 + size - 1;
+      const c1 = c0 + size - 1;
+      for (let rr = r0; rr <= r1; rr++) {
+        for (let cc = c0; cc <= c1; cc++) {
+          applyTool(rr, cc, val);
+        }
+      }
+    }
+
+    // Tool selection handling (scoped to active tab only)
+    function wireTools() {
+      document.querySelectorAll('aside .section').forEach(section => {
+        const scope = section.getAttribute('data-tools');
+        if (!scope) return;
+        // tool buttons
+        section.querySelectorAll('.tool').forEach(el => {
+          const custom = el.classList.contains('custom');
+          if (custom) {
+            const input = el.querySelector('input');
+            const btn = el.querySelector('button[data-apply-custom]');
+            btn.addEventListener('click', () => {
+              const val = (input.value || '').trim();
+              if (!val) return;
+              if (scope !== state.activeTab) return; // only apply to active grid
+              state.selectedToolByTab[scope] = val;
+              updateToolUI();
+            });
+          } else {
+            // Only interactive if it represents a real tool button
+            if (!el.hasAttribute('data-tool')) return;
+            el.addEventListener('click', () => {
+              if (scope !== state.activeTab) return; // tool applies only to its grid
+              const val = el.getAttribute('data-tool') || '';
+              state.selectedToolByTab[scope] = val;
+              updateToolUI();
+            });
+          }
+        });
+      });
+    }
+
+    function updateToolUI() {
+      // update label (include markers/properties preview)
+      const preview = composeTokenForPaint(state.activeTab) || 'blank';
+      activeToolLbl.textContent = preview;
+      // update active class only inside visible tool section
+      document.querySelectorAll('aside .section').forEach(section => {
+        const scope = section.getAttribute('data-tools');
+        if (!scope) return;
+        const current = state.selectedToolByTab[scope] || '';
+        section.querySelectorAll('.tool').forEach(btn => {
+          if (btn.classList.contains('custom')) { btn.classList.remove('active'); return; }
+          if (!btn.hasAttribute('data-tool')) { btn.classList.remove('active'); return; }
+          const val = btn.getAttribute('data-tool') || '';
+          btn.classList.toggle('active', current === val && scope === state.activeTab);
+        });
+      });
+    }
+
+    // Export helpers
+    function matrixToCSV(mat, header) {
+      const rows = mat.map(row => row.map(cell => {
+        const s = String(cell ?? '');
+        if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+          return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+      }).join(','));
+      rows.unshift(header);
+      return rows.join('\n');
+    }
+
+    function download(filename, text) {
+      const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function copyToClipboard(text) {
+      navigator.clipboard?.writeText(text).catch(()=>{});
+    }
+
+    // Build CSV lines for a matrix (no header)
+    function matrixRowsToCSVLines(mat) {
+      return mat.map(row => row.map(cell => {
+        const s = String(cell ?? '');
+        if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+          return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+      }).join(','));
+    }
+
+    // Multi-z CSV for a single tab, using #> between floors
+    function tabToMultiZCSV(tabId) {
+      ensureGrids();
+      const tab = Tabs.find(t => t.id === tabId) || Tabs[0];
+      const lines = [tab.header];
+      for (let z = 0; z < state.zCount; z++) {
+        if (z > 0) lines.push('#>');
+        const mat = getMatrix(tabId, z);
+        const rows = matrixRowsToCSVLines(mat);
+        for (const r of rows) lines.push(r);
+      }
+      return lines.join('\n');
+    }
+
+    // --- Z-level UI helpers ---
+    function updateZLabel() {
+      const lbl = document.getElementById('z-label');
+      if (lbl) lbl.textContent = `Z${state.activeZ+1}/${state.zCount}`;
+    }
+
+    // --- Next-grid preview rendering ---
+    const PREVIEW_SCALE = 0.80; // previews at a static 80% of main
+    const PREVIEW_GAP = 16; // px, should match .gridwrap gap
+
+    function getFollowingTabIds(id) {
+      const i = Tabs.findIndex(t => t.id === id);
+      if (i < 0) return [];
+      return Tabs.slice(i+1).map(t => t.id);
+    }
+    function getNextTabId(id) {
+      const i = Tabs.findIndex(t => t.id === id);
+      if (i < 0) return null;
+      const nxt = Tabs[i+1];
+      return nxt ? nxt.id : null;
+    }
+
+    function removeExistingPreview() {
+      if (!gridWrapEl) return;
+      gridWrapEl.querySelectorAll('.preview').forEach(el => el.remove());
+    }
+
+    function buildPreviewTable(scopeId, zIndex = state.activeZ) {
+      const mat = getMatrix(scopeId, zIndex);
+      if (!mat) return null;
+      const tbl = document.createElement('table');
+      tbl.className = 'grid';
+      for (let r = 0; r < mat.length; r++) {
+        const tr = document.createElement('tr');
+        for (let c = 0; c < mat[0].length; c++) {
+          const td = document.createElement('td');
+          const val = mat[r][c];
+          td.textContent = val;
+          styleCell(td, val, scopeId);
+          if (scopeId !== 'dig') maybeApplyDigOverlay(td, r, c);
+          tr.appendChild(td);
+        }
+        tbl.appendChild(tr);
+      }
+      return tbl;
+    }
+
+    function maybeRenderPreview() {
+      if (!gridWrapEl) return;
+      removeExistingPreview();
+      if (!state.previewEnabled) return;
+      const nextId = getNextTabId(state.activeTab);
+      if (!nextId) return; // last grid, nothing to preview
+      const mainWidth = gridEl?.offsetWidth || 0;
+      const previewWidth = Math.round(mainWidth * PREVIEW_SCALE);
+      
+      // East (right) preview
+      const wrapEast = document.createElement('div');
+      wrapEast.className = 'preview';
+      wrapEast.style.width = previewWidth + 'px';
+      wrapEast.style.flex = `0 0 ${previewWidth}px`;
+      const tblEast = buildPreviewTable(nextId);
+      if (tblEast) {
+        wrapEast.appendChild(tblEast);
+        gridWrapEl.appendChild(wrapEast);
+      }
+      
+      // South (below) preview: only if Z > 1, show same tab at Z-1
+      if (state.activeZ > 0) {
+        const wrapSouth = document.createElement('div');
+        wrapSouth.className = 'preview south';
+        const tblSouth = buildPreviewTable(state.activeTab, state.activeZ - 1);
+        if (tblSouth) {
+          wrapSouth.appendChild(tblSouth);
+          gridWrapEl.appendChild(wrapSouth);
+        }
+      }
+    }
+
+    // Dig overlay helper
+    function maybeApplyDigOverlay(td, r, c) {
+      // Remove any existing overlay
+      const prev = td.querySelector('.dig-overlay');
+      if (prev) prev.remove();
+      const digMat = getMatrix('dig', state.activeZ);
+      const dv = (digMat?.[r]?.[c]) || '';
+      if (!dv) return;
+      const ov = document.createElement('div');
+      ov.className = 'dig-overlay';
+      td.appendChild(ov);
+    }
+
+    // Color coding
+    const COLOR_DIG = {
+      d:'#3fa7ff', h:'#70d6ff', u:'#ffd166', j:'#ffd166', i:'#fca311', r:'#90be6d', z:'#ff6b6b', n:'#8d99ae', M:'#9b5de5', v:'#577590', T:'#43aa8b', t:'#40916c', p:'#70e000', s:'#adb5bd', e:'#6c757d', F:'#4cc9f0', x:'#2b2d42'
+    };
+    const COLOR_PLACE = { // stockpile types
+      a:'#8dd3c7', f:'#ffffb3', u:'#bebada', n:'#fb8072', y:'#80b1d3', r:'#fdb462', s:'#b3de69', w:'#fccde5', e:'#d9d9d9', b:'#bc80bd', h:'#ccebc5', l:'#ffed6f', z:'#1f78b4', S:'#6a3d9a', g:'#b15928', p:'#e31a1c', d:'#33a02c', c:'#ff7f00'
+    };
+    const COLOR_ZONE = {
+      m:'#8ecae6', b:'#219ebc', h:'#ffb703', n:'#fb8500', p:'#f94144', w:'#577590', j:'#90be6d', f:'#f3722c', s:'#f9c74f', o:'#43aa8b', D:'#4d908e', B:'#577590', a:'#277da1', d:'#f8961e', t:'#2a9d8f', T:'#9c6644', g:'#6a994e', c:'#b56576'
+    };
+    const COLOR_BUILD_GROUP = {
+      'Furniture':'#5e60ce',
+      'Roads & Plots':'#6c757d',
+      'Workshops':'#00b4d8',
+      'Furnaces':'#ffafcc',
+      'Siege Engines':'#ff8fab',
+      'Constructions':'#8d99ae',
+      'Track Stops':'#90be6d',
+      'Traps & Levers':'#f77f00',
+      'Constructed Tracks':'#43aa8b',
+      'Mechanical Power':'#4cc9f0'
+    };
+    let BUILD_TOKEN_GROUP = null; // token -> group name
+    function ensureBuildTokenGroup() {
+      if (BUILD_TOKEN_GROUP) return;
+      BUILD_TOKEN_GROUP = {};
+      try {
+        (BUILD_GROUPS||[]).forEach(group => {
+          (group.items||[]).forEach(([v]) => { BUILD_TOKEN_GROUP[v] = group.name; });
+        });
+      } catch (_) { BUILD_TOKEN_GROUP = {}; }
+    }
+
+    // Individual colors for Furniture tokens
+    const FURNITURE_COLOR_PALETTE = [
+      '#ef4444','#f97316','#f59e0b','#eab308','#84cc16','#22c55e','#10b981','#14b8a6','#06b6d4','#0ea5e9',
+      '#3b82f6','#6366f1','#8b5cf6','#a855f7','#d946ef','#ec4899','#f43f5e','#fb7185','#fda4af','#fdba74',
+      '#fde047','#bef264','#86efac','#5eead4','#67e8f9','#93c5fd','#a5b4fc','#c4b5fd'
+    ];
+    let FURNITURE_TOKEN_COLOR = null; // token -> hex color
+    function ensureFurnitureTokenColors() {
+      if (FURNITURE_TOKEN_COLOR) return;
+      FURNITURE_TOKEN_COLOR = {};
+      try {
+        const furn = (BUILD_GROUPS||[]).find(g => g.name === 'Furniture');
+        if (furn && Array.isArray(furn.items)) {
+          let idx = 0;
+          furn.items.forEach(([v]) => {
+            const base = stripPropsAndCfg(v);
+            if (!base) return;
+            if (FURNITURE_TOKEN_COLOR[base]) return; // keep first assignment
+            const color = FURNITURE_COLOR_PALETTE[idx % FURNITURE_COLOR_PALETTE.length];
+            FURNITURE_TOKEN_COLOR[base] = color; idx++;
+          });
+        }
+      } catch (_) { FURNITURE_TOKEN_COLOR = {}; }
+    }
+
+    function getBuildGroupForToken(base) {
+      ensureBuildTokenGroup();
+      if (!base) return null;
+      let group = BUILD_TOKEN_GROUP[base];
+      if (!group) {
+        if (/^trackstop/i.test(base)) group = 'Track Stops';
+        else if (/^track|^trackramp/i.test(base)) group = 'Constructed Tracks';
+        else if (/^roller/i.test(base) || /^M/.test(base)) group = 'Mechanical Power';
+        else if (/^(ew|es|el|eg|ea|ek|en)$/.test(base)) group = 'Furnaces';
+        else if (/^(C[wWdfru dxFSDg]|ga|gd|gx|gw)$/.test(base)) group = 'Constructions';
+        else if (/^T[swtpcS]$/.test(base) || base === 'Tl') group = 'Traps & Levers';
+        else if (/^[a-zA-Z]{1,2}$/.test(base)) group = 'Furniture';
+        else group = 'Workshops';
+      }
+      return group || null;
+    }
+
+    function getBuildColorForToken(base) {
+      const group = getBuildGroupForToken(base);
+      if (!group) return null;
+      if (group === 'Furniture') {
+        ensureFurnitureTokenColors();
+        const col = FURNITURE_TOKEN_COLOR[base];
+        if (col) return col;
+      }
+      return COLOR_BUILD_GROUP[group] || '#7b2cbf';
+    }
+
+    function stripPropsAndCfg(token) {
+      if (!token) return '';
+      let s = String(token);
+      s = s.replace(/\{[^}]*\}/g, ''); // remove {...}
+      s = s.replace(/:=.*$/, ''); // remove :=config
+      // remove trailing extent like (3x3)
+      s = s.replace(/\(\s*\d+\s*x\s*\d+\s*\)\s*$/, '');
+      return s;
+    }
+
+    function stripDigMarkersAndPriority(token) {
+      let s = stripPropsAndCfg(token);
+      s = s.replace(/^(mb|mw|md)+/, '');
+      s = s.replace(/[1-7]$/, '');
+      return s;
+    }
+
+    function getDigColorForToken(token) {
+      const base = stripDigMarkersAndPriority(token||'');
+      const key = base.charAt(0);
+      return COLOR_DIG[key] || null;
+    }
+
+    function getPlaceColorForToken(token) {
+      const base = stripPropsAndCfg(token||'');
+      const key = base.charAt(0);
+      return COLOR_PLACE[key] || null;
+    }
+
+    function getZoneColorForToken(token) {
+      const base = stripPropsAndCfg(token||'');
+      const key = base.charAt(0);
+      return COLOR_ZONE[key] || null;
+    }
+
+    function getBurrowColorForToken(token) {
+      const base = stripPropsAndCfg(token||'');
+      const key = base.charAt(0);
+      if (key === 'a') return '#2b9348';
+      if (key === 'e') return '#d90429';
+      return null;
+    }
+
+    function ensureReadableText(td, bg) {
+      // Simple luminance check to pick text color
+      const hex = bg.replace('#','');
+      if (hex.length === 6) {
+        const r = parseInt(hex.substring(0,2),16)/255;
+        const g = parseInt(hex.substring(2,4),16)/255;
+        const b = parseInt(hex.substring(4,6),16)/255;
+        const lum = 0.2126*r + 0.7152*g + 0.0722*b;
+        td.style.color = lum > 0.6 ? '#111' : '#fff';
+      } else {
+        td.style.color = 'var(--fg)';
+      }
+    }
+
+    function gradientForLetters(letters, map) {
+      const cols = letters.map(ch => map[ch] || '#444');
+      if (!cols.length) return null;
+      if (cols.length === 1) return cols[0];
+      const n = cols.length;
+      const stops = [];
+      for (let i=0;i<n;i++) {
+        const start = Math.round((i/n)*100);
+        const end = Math.round(((i+1)/n)*100);
+        stops.push(`${cols[i]} ${start}% ${end}%`);
+      }
+      return `linear-gradient(90deg, ${stops.join(', ')})`;
+    }
+
+    function isPlaceholderToken(raw) {
+      const t = String(raw||'').trim();
+      if (!t) return true; // empty
+      const base = stripPropsAndCfg(t);
+      return base === '' || base === '#' || base === '#>';
+    }
+
+    function styleCell(td, val, scopeId) {
+      // reset
+      td.style.background = 'var(--cell)';
+      td.style.color = 'var(--fg)';
+      const s = String(val||'');
+      if (!s) return;
+      if (isPlaceholderToken(s)) return; // keep dark styling for placeholders
+      if (scopeId === 'dig') {
+        const base = stripDigMarkersAndPriority(s);
+        const key = base.charAt(0);
+        const col = COLOR_DIG[key];
+        if (col) { td.style.background = col; ensureReadableText(td, col); }
+        return;
+      }
+      if (scopeId === 'place') {
+        const base = stripPropsAndCfg(s);
+        // multi-type combo: use gradient
+        const letters = base.split('');
+        const grad = gradientForLetters(letters, COLOR_PLACE);
+        if (grad) {
+          td.style.background = grad;
+          // pick text color based on first color
+          const first = COLOR_PLACE[letters[0]] || '#444';
+          ensureReadableText(td, first);
+        }
+        return;
+      }
+      if (scopeId === 'zone') {
+        const base = stripPropsAndCfg(s);
+        const key = base.charAt(0);
+        const col = COLOR_ZONE[key];
+        if (col) { td.style.background = col; ensureReadableText(td, col); }
+        return;
+      }
+      if (scopeId === 'burrow') {
+        const base = stripPropsAndCfg(s);
+        const key = base.charAt(0);
+        const col = key === 'a' ? '#2b9348' : key === 'e' ? '#d90429' : '#577590';
+        td.style.background = col; ensureReadableText(td, col);
+        return;
+      }
+      if (scopeId === 'build') {
+        const base = stripPropsAndCfg(s);
+        const col = getBuildColorForToken(base);
+        if (!col) return;
+        td.style.background = col; ensureReadableText(td, col); return;
+      }
+      if (scopeId === 'query') {
+        td.style.background = '#ff9500'; td.style.color = '#111';
+        return;
+      }
+    }
+
+    // CSV import helpers
+    function parseCSV(text) {
+      const norm = (text||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+      const rows = [];
+      let field = '';
+      let inQuotes = false;
+      let row = [];
+      for (let i = 0; i <= norm.length; i++) {
+        const ch = norm[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            const next = norm[i+1];
+            if (next === '"') { field += '"'; i++; }
+            else { inQuotes = false; }
+          } else if (ch === undefined) {
+            // end of input while in quotes: finalize
+            row.push(field); rows.push(row); break;
+          } else {
+            field += ch;
+          }
+        } else {
+          if (ch === '"') { inQuotes = true; }
+          else if (ch === ',') { row.push(field); field = ''; }
+          else if (ch === '\n' || ch === undefined) {
+            row.push(field); field = '';
+            rows.push(row); row = [];
+            if (ch === undefined) break;
+          } else {
+            field += ch;
+          }
+        }
+      }
+      // normalize to rectangular matrix by padding with ''
+      const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 0);
+      return rows.map(r => r.length < maxCols ? r.concat(Array(maxCols - r.length).fill('')) : r);
+    }
+
+    function firstCSVCell(line) {
+      let i = 0, cell = '', inQuotes = false;
+      while (i < line.length) {
+        const ch = line[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            const next = line[i+1];
+            if (next === '"') { cell += '"'; i += 2; continue; }
+            inQuotes = false; i++; continue;
+          }
+          cell += ch; i++; continue;
+        } else {
+          if (ch === '"') { inQuotes = true; i++; continue; }
+          if (ch === ',') break;
+          cell += ch; i++;
+        }
+      }
+      return cell.trim();
+    }
+
+    function detectHeaderLine(line) {
+      const first = firstCSVCell(line || '');
+      const m = /^#(dig|build|place|zone|burrow|query)\b/i.exec(first);
+      return m ? `#${m[1].toLowerCase()}` : null;
+    }
+
+    function splitSheetsFromText(text) {
+      const norm = (text||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+      const lines = norm.split('\n');
+      const sheets = [];
+      let i = 0;
+      while (i < lines.length) {
+        while (i < lines.length && lines[i].trim() === '') i++;
+        if (i >= lines.length) break;
+        const header = detectHeaderLine(lines[i]);
+        if (header) {
+          i++;
+          const buf = [];
+          while (i < lines.length && !detectHeaderLine(lines[i])) { buf.push(lines[i]); i++; }
+          while (buf.length && buf[buf.length-1].trim() === '') buf.pop();
+          const mat = parseCSV(buf.join('\n'));
+          sheets.push({ header, matrix: mat });
+        } else {
+          // single sheet without recognizable header: parse the rest into current tab
+          const buf = lines.slice(i).join('\n');
+          const mat = parseCSV(buf);
+          sheets.push({ header: null, matrix: mat });
+          break;
+        }
+      }
+      return sheets;
+    }
+
+    function headerToTabId(header) {
+      if (!header) return state.activeTab;
+      const mode = /^#(dig|build|place|zone|burrow|query)\b/i.exec(header)?.[1]?.toLowerCase();
+      const t = Tabs.find(t => t.id === mode);
+      return t ? t.id : state.activeTab;
+    }
+
+    // Wire header controls
+    // Live resize on input/change
+    const colsInputEl = document.getElementById('cols');
+    const rowsInputEl = document.getElementById('rows');
+    if (colsInputEl) {
+      colsInputEl.addEventListener('change', () => setGridSize(state.rows, colsInputEl.value));
+      colsInputEl.addEventListener('input', () => {
+        const v = parseInt(colsInputEl.value, 10);
+        if (!isNaN(v)) setGridSize(state.rows, v);
+      });
+    }
+    if (rowsInputEl) {
+      rowsInputEl.addEventListener('change', () => setGridSize(rowsInputEl.value, state.cols));
+      rowsInputEl.addEventListener('input', () => {
+        const v = parseInt(rowsInputEl.value, 10);
+        if (!isNaN(v)) setGridSize(v, state.cols);
+      });
+    }
+    // Increment/decrement buttons
+    const colsInc = document.getElementById('cols-inc');
+    const colsDec = document.getElementById('cols-dec');
+    const rowsInc = document.getElementById('rows-inc');
+    const rowsDec = document.getElementById('rows-dec');
+    colsInc?.addEventListener('click', () => setGridSize(state.rows, state.cols + 1));
+    colsDec?.addEventListener('click', () => setGridSize(state.rows, state.cols - 1));
+    rowsInc?.addEventListener('click', () => setGridSize(state.rows + 1, state.cols));
+    rowsDec?.addEventListener('click', () => setGridSize(state.rows - 1, state.cols));
+    document.getElementById('cleargrid').addEventListener('click', () => {
+      const mat = makeMatrix(state.rows, state.cols);
+      setMatrix(state.activeTab, state.activeZ, mat);
+      renderGrid();
+    });
+    // Zoom buttons
+    document.getElementById('zoom-in').addEventListener('click', () => { zoomIn(); });
+    document.getElementById('zoom-out').addEventListener('click', () => { zoomOut(); });
+    // Keyboard shortcuts for zoom
+    document.addEventListener('keydown', (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomIn(); }
+      else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomOut(); }
+      else if (e.key === '0') { e.preventDefault(); resetZoom(); }
+    });
+
+    // Z-level controls
+    const zUpBtn = document.getElementById('z-up');
+    const zDownBtn = document.getElementById('z-down');
+    const zAddBtn = document.getElementById('z-add');
+    const zDelBtn = document.getElementById('z-del');
+    zUpBtn?.addEventListener('click', () => {
+      clampActiveZ();
+      if (state.activeZ < state.zCount - 1) state.activeZ++;
+      updateZLabel();
+      renderGrid();
+    });
+    zDownBtn?.addEventListener('click', () => {
+      clampActiveZ();
+      if (state.activeZ > 0) state.activeZ--;
+      updateZLabel();
+      renderGrid();
+    });
+    zAddBtn?.addEventListener('click', () => {
+      // add a new empty layer for each tab
+      Tabs.forEach(t => {
+        if (!state.grids[t.id]) state.grids[t.id] = [];
+        state.grids[t.id].push(makeMatrix(state.rows, state.cols));
+      });
+      state.zCount += 1;
+      state.activeZ = state.zCount - 1;
+      updateZLabel();
+      renderGrid();
+    });
+    zDelBtn?.addEventListener('click', () => {
+      if (state.zCount <= 1) return; // keep at least one level
+      Tabs.forEach(t => {
+        if (!state.grids[t.id]) state.grids[t.id] = [];
+        if (state.grids[t.id].length > 1) {
+          state.grids[t.id].splice(state.activeZ, 1);
+        }
+      });
+      state.zCount = Math.max(1, state.zCount - 1);
+      clampActiveZ();
+      updateZLabel();
+      renderGrid();
+    });
+
+    // (Header project save/load removed to match the copy file.)
+
+    // Wire statusbar actions
+    document.getElementById('copycsv').addEventListener('click', () => {
+      const csv = tabToMultiZCSV(state.activeTab);
+      copyToClipboard(csv);
+    });
+    document.getElementById('downloadcsv').addEventListener('click', () => {
+      const csv = tabToMultiZCSV(state.activeTab);
+      download(`${state.activeTab}.csv`, csv);
+    });
+    document.getElementById('exportall').addEventListener('click', () => {
+      // Concatenate all tabs; each tab emits multi-z CSV
+      let bundle = '';
+      Tabs.forEach((t, idx) => {
+        const csv = tabToMultiZCSV(t.id);
+        if (idx) bundle += '\n\n';
+        bundle += csv;
+      });
+      download('quickfort-blueprints.csv', bundle);
+    });
+
+    // Load CSV(s) into grids
+    document.getElementById('loadcsv').addEventListener('click', () => {
+      document.getElementById('fileinput').click();
+    });
+    document.getElementById('fileinput').addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const text = String(reader.result||'');
+          const sheets = splitSheetsFromText(text);
+          if (!sheets.length) return;
+          // compute max dimensions (ignore control rows like #> / #<)
+          let maxR = 0, maxC = 0;
+          sheets.forEach(s => {
+            const filtered = s.matrix.filter(r => !/^#([<>])(\d+)?$/.test(String(r?.[0] ?? '').trim()));
+            const rows = filtered.length;
+            const cols = filtered.reduce((m,r)=>Math.max(m, r.length), 0);
+            if (rows > maxR) maxR = rows;
+            if (cols > maxC) maxC = cols;
+          });
+          maxR = Math.max(1, maxR);
+          maxC = Math.max(1, maxC);
+          if (maxR !== state.rows || maxC !== state.cols) {
+            state.rows = maxR; state.cols = maxC;
+            const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(maxC);
+            const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(maxR);
+            resizeAllGrids(state.rows, state.cols);
+          }
+          // import each sheet, supporting multi-z via #> / #< control rows
+          let firstTab = null;
+          sheets.forEach(s => {
+            const id = headerToTabId(s.header);
+            if (!firstTab) firstTab = id;
+            importSectionToMultiZ(id, s.matrix);
+          });
+          if (firstTab) setActiveTab(firstTab);
+          else renderGrid();
+        } catch (err) {
+          console.error('Failed to load CSV:', err);
+        } finally {
+          e.target.value = '';
+        }
+      };
+      reader.readAsText(f);
+    });
+
+    // Import a single sheet (matrix rows) into multi-z layers using #> / #< rows
+    function importSectionToMultiZ(tabId, rows) {
+      let currentZ = 0;
+      const matrices = [makeMatrix(state.rows, state.cols)];
+      function ensureLocalZ(idx) {
+        while (matrices.length <= idx) matrices.push(makeMatrix(state.rows, state.cols));
+      }
+      let rr = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i] || [];
+        const first = String(row[0] ?? '').trim();
+        const m = first.match(/^#([<>])(\d+)?$/);
+        if (m) {
+          const dir = m[1];
+          const step = m[2] ? parseInt(m[2], 10) : 1;
+          if (dir === '>') currentZ += step; else if (dir === '<') currentZ = Math.max(0, currentZ - step);
+          ensureLocalZ(currentZ);
+          rr = 0;
+          continue;
+        }
+        ensureLocalZ(currentZ);
+        const mat = matrices[currentZ];
+        if (rr >= state.rows) continue;
+        for (let c = 0; c < Math.min(row.length, state.cols); c++) {
+          mat[rr][c] = row[c] ?? '';
+        }
+        rr++;
+      }
+      // extend global zCount if needed and ensure global structures
+      if (matrices.length > state.zCount) state.zCount = matrices.length;
+      ensureGrids();
+      resizeAllGrids(state.rows, state.cols);
+      // copy into global state for this tab
+      for (let z = 0; z < matrices.length; z++) {
+        setMatrix(tabId, z, matrices[z]);
+      }
+      clampActiveZ();
+      updateZLabel();
+    }
+
+    // Help popover wiring
+    (function wireHelpPopover(){
+      const btn = document.getElementById('help-btn');
+      const pop = document.getElementById('help-pop');
+      if (!btn || !pop) return;
+      const hide = () => { pop.classList.add('hidden'); };
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        pop.classList.toggle('hidden');
+      });
+      document.addEventListener('click', (e) => {
+        const t = e.target;
+        if (t === btn || pop.contains(t)) return;
+        hide();
+      });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+    })();
+
+    // Init
+    // Token catalogs from DFHack quickfort guide
+    const DIG_BASIC = [
+      ['d','Dig'], ['h','Channel'], ['u','Up stair'], ['j','Down stair'], ['i','Up/Down stair'], ['r','Ramp'], ['z','Remove up stairs/ramps'],
+      ['n','Remove construction'], ['M','Toggle marker/blueprint'], ['v','Toggle engraving visibility'], ['T','Carve track (generic)'],
+      ['t','Chop trees'], ['p','Gather plants'], ['s','Smooth'], ['e','Engrave'], ['F','Fortification'], ['x','Remove designation'], ['','Eraser']
+    ];
+    const DIG_FLAGS = [
+      ['bc','Claim items'], ['bf','Forbid items'], ['bm','Melt items'], ['bM','Unmelt items'], ['bd','Dump items'], ['bD','Undump items'], ['bh','Hide items'], ['bH','Unhide items'], ['oh','High traffic'], ['on','Normal traffic'], ['ol','Low traffic'], ['or','Restricted traffic']
+    ];
+    const DIG_TRACKS = [
+      'trackN','trackS','trackE','trackW','trackNS','trackEW','trackNE','trackNW','trackSE','trackSW','trackNSE','trackNSW','trackNEW','trackSEW','trackNSEW'
+    ];
+
+    const PLACE_STOCKPILES = [
+      ['','Eraser'],
+      ['a','animal'], ['f','food'], ['u','furniture'], ['n','coins'], ['y','corpses'], ['r','refuse'], ['s','stone'], ['w','wood'], ['e','gem'], ['b','barsblocks'], ['h','cloth'], ['l','leather'], ['z','ammo'], ['S','sheets'], ['g','finished goods'], ['p','weapons'], ['d','armor'], ['c','custom']
+    ];
+
+    const ZONE_TYPES = [
+      ['','Eraser'],
+      ['m','meeting'], ['b','bedroom'], ['h','dining'], ['n','pen/pasture'], ['p','pit/pond'], ['w','water source'], ['j','dungeon'], ['f','fishing'], ['s','sand'], ['o','office'], ['D','dormitory'], ['B','barracks'], ['a','archery'], ['d','garbage'], ['t','animal training'], ['T','tomb'], ['g','gather/pick fruit'], ['c','clay']
+    ];
+    const BURROW_TYPES = [ ['','Eraser'], ['a','add'], ['e','erase'] ];
+
+    // Build catalog (grouped)
+    const BUILD_GROUPS = [
+      { name: 'Furniture', items: [
+        ['a','armor stand'], ['b','bed'], ['c','seat'], ['n','burial receptacle'], ['d','door'], ['x','floodgate'], ['H','floor hatch'], ['W','wall grate'], ['G','floor grate'], ['B','vertical bars'], ['~b','floor bars'], ['f','cabinet'], ['h','container'], ['r','weapon rack'], ['~c','bookcase'], ['F','display furniture'], ['I','buildable instrument'],
+        ['s','statue'], ['t','table'], ['l','well'], ['y','glass window'], ['Y','gem window'], ['A','archery target'], ['m','animal trap'], ['v','restraint'], ['j','cage'], ['N','nest box'], ['~h','hive'], ['a','offering place']
+      ]},
+      { name: 'Roads & Plots', items: [ ['p','farm plot'], ['o','paved road'], ['O','dirt road'], ['k','vermin catcher'] ] },
+      { name: 'Workshops', items: [ ['we','leather works'], ['wq','quern'], ['wM','millstone'], ['wo','loom'], ['wk','clothier'], ['wb','bowyer'], ['wc','carpenter'], ['wf','metalsmith'], ['wv','magma forge'], ['wj','jeweler'], ['wm','stoneworker'], ['wu','butcher'], ['wn','tanner'], ['wr','craftsdwarf'], ['ws','siege workshop'], ['wt','mechanic'], ['wl','still'], ['ww','farmer'], ['wz','kitchen'], ['wh','fishery'], ['wy','ashery'], ['wd','dyer'], ['wS','soap maker'], ['wp','screw press'] ]},
+      { name: 'Furnaces', items: [ ['ew','wood furnace'], ['es','smelter'], ['el','magma smelter'], ['eg','glass furnace'], ['ea','magma glass furnace'], ['ek','kiln'], ['en','magma kiln'] ] },
+      { name: 'Siege Engines', items: [ ['ib','ballista'], ['it','bolt thrower'], ['ic','catapult'] ] },
+      { name: 'Constructions', items: [ ['Cw','wall'], ['CW','reinforced wall'], ['Cf','floor'], ['Cr','ramp'], ['Cu','up stair'], ['Cd','down stair'], ['Cx','up/down stair'], ['CF','fortification'], ['S','support'], ['D','trade depot'], ['g','bridge (retracting)'], ['gw','bridge (raise west)'], ['gd','bridge (raise south)'], ['gx','bridge (raise east)'], ['ga','bridge (raise north)'] ] },
+      { name: 'Track Stops', items: [ ['trackstop','track stop'], ['trackstopN','track stop N'], ['trackstopS','track stop S'], ['trackstopE','track stop E'], ['trackstopW','track stop W'] ] },
+      { name: 'Traps & Levers', items: [ ['Ts','stone-fall trap'], ['Tw','weapon trap'], ['Tl','lever'], ['Tp','pressure plate'], ['Tc','cage trap'], ['TS','upright spear/spike'] ] },
+      { name: 'Constructed Tracks', items: [ ['trackN','track N'], ['trackS','track S'], ['trackE','track E'], ['trackW','track W'], ['trackNS','track NS'], ['trackEW','track EW'], ['trackNE','track NE'], ['trackNW','track NW'], ['trackSE','track SE'], ['trackSW','track SW'], ['trackNSE','track NSE'], ['trackNSW','track NSW'], ['trackNEW','track NEW'], ['trackSEW','track SEW'], ['trackNSEW','track NSEW'], ['trackrampN','ramp N'], ['trackrampS','ramp S'], ['trackrampE','ramp E'], ['trackrampW','ramp W'], ['trackrampNS','ramp NS'], ['trackrampEW','ramp EW'], ['trackrampNE','ramp NE'], ['trackrampNW','ramp NW'], ['trackrampSE','ramp SE'], ['trackrampSW','ramp SW'], ['trackrampNSE','ramp NSE'], ['trackrampNSW','ramp NSW'], ['trackrampNEW','ramp NEW'], ['trackrampSEW','ramp SEW'], ['trackrampNSEW','ramp NSEW'] ] }
+      ,{ name: 'Mechanical Power', items: [
+        ['Msu','screw pump (from south)'], ['Msk','screw pump (from north)'], ['Msm','screw pump (from east)'], ['Msh','screw pump (from west)'],
+        ['Mw','water wheel (vertical)'], ['Mws','water wheel (horizontal)'], ['Mg','gear assembly'],
+        ['Mh','axle (horizontal E-W)'], ['Mhs','axle (horizontal N-S)'], ['Mv','axle (vertical)'],
+        ['rollerNS','roller pushing south'], ['rollerEW','roller pushing west'], ['rollerSN','roller pushing north'], ['rollerWE','roller pushing east']
+      ]}
+    ];
+
+    function buildToolButton(val, label) {
+      const d = document.createElement('div');
+      d.className = 'tool';
+      d.setAttribute('data-tool', val);
+      d.innerHTML = `${label||val}<small>${val}</small>`;
+      return d;
+    }
+
+    function buildColoredToolButton(val, label, color) {
+      const d = document.createElement('div');
+      d.className = 'tool';
+      d.setAttribute('data-tool', val);
+      const title = document.createElement('div');
+      title.textContent = label || val;
+      const small = document.createElement('small');
+      small.className = 'token-pill';
+      small.textContent = val || ' ';
+      if (color) { small.style.background = color; ensureReadableText(small, color); }
+      d.appendChild(title);
+      d.appendChild(small);
+      return d;
+    }
+
+    function buildColoredBuildToolButton(val, label) {
+      const d = document.createElement('div');
+      d.className = 'tool';
+      d.setAttribute('data-tool', val);
+      const title = document.createElement('div');
+      title.textContent = label || val;
+      const small = document.createElement('small');
+      small.className = 'token-pill';
+      small.textContent = val;
+      const base = stripPropsAndCfg(val);
+      const col = getBuildColorForToken(base);
+      if (col) {
+        small.style.background = col;
+        ensureReadableText(small, col);
+      }
+      d.appendChild(title);
+      d.appendChild(small);
+      return d;
+    }
+
+    function renderToolCatalogs() {
+      // Dig: basic
+      const digBasic = document.getElementById('dig-basic');
+      DIG_BASIC.forEach(([v,l]) => {
+        const base = stripPropsAndCfg(v);
+        const col = getDigColorForToken(base);
+        digBasic.appendChild(buildColoredToolButton(v,l,col));
+      });
+      // Dig: flags
+      const digFlags = document.getElementById('dig-flags');
+      DIG_FLAGS.forEach(([v,l]) => {
+        const base = stripPropsAndCfg(v);
+        const col = getDigColorForToken(base);
+        digFlags.appendChild(buildColoredToolButton(v,l,col));
+      });
+      // Dig: tracks
+      const digTracks = document.getElementById('dig-tracks');
+      DIG_TRACKS.forEach(v => {
+        const base = stripPropsAndCfg(v);
+        const col = getDigColorForToken(base);
+        digTracks.appendChild(buildColoredToolButton(v, v, col));
+      });
+
+      // Place: stockpiles
+      const place = document.getElementById('place-stockpiles');
+      PLACE_STOCKPILES.forEach(([v,l]) => {
+        const base = stripPropsAndCfg(v);
+        const col = getPlaceColorForToken(base);
+        place.appendChild(buildColoredToolButton(v,l,col));
+      });
+
+      // Place: multi-type builder checkboxes
+      const placeMulti = document.getElementById('place-multi-checks');
+      if (placeMulti) {
+        PLACE_STOCKPILES.forEach(([v, label]) => {
+          if (!v) return; // skip eraser
+          const wrap = document.createElement('label');
+          wrap.className = 'tool';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.value = v;
+          const span = document.createElement('span');
+          span.textContent = label;
+          wrap.appendChild(cb);
+          wrap.appendChild(span);
+          placeMulti.appendChild(wrap);
+        });
+        const placeMultiApply = document.getElementById('place-multi-apply');
+        if (placeMultiApply) {
+          placeMultiApply.addEventListener('click', () => {
+            const checks = document.querySelectorAll('#place-multi-checks input[type=checkbox]');
+            const parts = [];
+            checks.forEach(cb => { if (cb.checked) parts.push(cb.value); });
+            const combo = parts.join('');
+            if (!combo) return;
+            state.selectedToolByTab['place'] = combo;
+            if (typeof updateToolUI === 'function') updateToolUI();
+          });
+        }
+      }
+
+      // Zone
+      const zones = document.getElementById('zone-types');
+      ZONE_TYPES.forEach(([v,l]) => {
+        const base = stripPropsAndCfg(v);
+        const col = getZoneColorForToken(base);
+        zones.appendChild(buildColoredToolButton(v,l,col));
+      });
+
+      // Burrow
+      const burrow = document.getElementById('burrow-types');
+      BURROW_TYPES.forEach(([v,l]) => {
+        const base = stripPropsAndCfg(v);
+        const col = getBurrowColorForToken(base);
+        burrow.appendChild(buildColoredToolButton(v,l,col));
+      });
+
+      // Build groups
+      const groupsEl = document.getElementById('build-groups');
+      groupsEl.innerHTML = '';
+      BUILD_GROUPS.forEach((group, gi) => {
+        const sec = document.createElement('div');
+        sec.className = 'section';
+        const h = document.createElement('h3'); h.textContent = group.name; sec.appendChild(h);
+        const grid = document.createElement('div'); grid.className = 'tool-grid';
+        group.items.forEach(([v,l]) => grid.appendChild(buildColoredBuildToolButton(v,l)));
+        sec.appendChild(grid);
+        groupsEl.appendChild(sec);
+      });
+    }
+
+    // Property builders for place/zone/burrow
+    function buildPlaceProps() {
+      const props = [];
+      const name = document.getElementById('place-name')?.value?.trim();
+      if (name) props.push(`name=${JSON.stringify(name)}`);
+      const takeFrom = document.getElementById('place-take-from')?.value?.trim();
+      if (takeFrom) props.push(`take_from=${JSON.stringify(takeFrom)}`);
+      const giveTo = document.getElementById('place-give-to')?.value?.trim();
+      if (giveTo) props.push(`give_to=${JSON.stringify(giveTo)}`);
+      const barrels = document.getElementById('place-barrels')?.value;
+      if (barrels !== '' && barrels != null) props.push(`barrels=${Number(barrels)}`);
+      const bins = document.getElementById('place-bins')?.value;
+      if (bins !== '' && bins != null) props.push(`bins=${Number(bins)}`);
+      const wheelbarrows = document.getElementById('place-wheelbarrows')?.value;
+      if (wheelbarrows !== '' && wheelbarrows != null) props.push(`wheelbarrows=${Number(wheelbarrows)}`);
+      const containers = document.getElementById('place-containers')?.value;
+      if (containers !== '' && containers != null) props.push(`containers=${Number(containers)}`);
+      if (document.getElementById('place-links-only')?.checked) props.push('links_only=true');
+      if (document.getElementById('place-quantum')?.checked) props.push('quantum=true');
+      if (document.getElementById('place-automelt')?.checked) props.push('automelt=true');
+      if (document.getElementById('place-autotrade')?.checked) props.push('autotrade=true');
+      if (document.getElementById('place-autodump')?.checked) props.push('autodump=true');
+      if (document.getElementById('place-autotrain')?.checked) props.push('autotrain=true');
+      const extra = document.getElementById('place-props')?.value?.trim();
+      if (extra) props.push(extra);
+      if (!props.length) return '';
+      return `{${props.join(' ')}}`;
+    }
+
+    function buildPlaceConfigSuffix() {
+      const cfg = document.getElementById('place-config')?.value?.trim();
+      if (!cfg) return '';
+      return `:=${cfg}`;
+    }
+
+    function buildPlaceExtentSuffix() {
+      const raw = document.getElementById('place-extent')?.value?.trim();
+      if (!raw) return '';
+      const m = raw.match(/^\(?\s*(\d+)\s*x\s*(\d+)\s*\)?$/i);
+      if (!m) return '';
+      const w = m[1];
+      const h = m[2];
+      return `(${w}x${h})`;
+    }
+
+    function buildZoneProps() {
+      const props = [];
+      const name = document.getElementById('zone-name')?.value?.trim();
+      if (name) props.push(`name=${JSON.stringify(name)}`);
+      const locType = document.getElementById('zone-location')?.value;
+      const locName = document.getElementById('zone-location-name')?.value?.trim();
+      if (locType) {
+        const loc = locName ? `${locType}/${locName}` : locType;
+        props.push(`location=${loc}`);
+      }
+      const prof = document.getElementById('zone-profession')?.value?.trim();
+      if (prof) props.push(`profession=${prof}`);
+      const extra = document.getElementById('zone-props')?.value?.trim();
+      if (extra) props.push(extra);
+      if (!props.length) return '';
+      return `{${props.join(' ')}}`;
+    }
+
+    function buildBurrowProps() {
+      const props = [];
+      const name = document.getElementById('burrow-name')?.value?.trim();
+      if (name) props.push(`name=${JSON.stringify(name)}`);
+      if (document.getElementById('burrow-create')?.checked) props.push('create=true');
+      const civalert = document.getElementById('burrow-civalert')?.value?.trim();
+      if (civalert) props.push(`civalert=${JSON.stringify(civalert)}`);
+      const extra = document.getElementById('burrow-props')?.value?.trim();
+      if (extra) props.push(extra);
+      if (!props.length) return '';
+      return `{${props.join(' ')}}`;
+    }
+
+    function composeTokenForPaint(scopeId) {
+      let token = state.selectedToolByTab[scopeId] || '';
+      if (!token) return '';
+      // dig markers
+      if (scopeId === 'dig') {
+        const parts = [];
+        if (document.getElementById('dig-mb').checked) parts.push('mb');
+        if (document.getElementById('dig-mw').checked) parts.push('mw');
+        if (document.getElementById('dig-md').checked) parts.push('md');
+        token = parts.join('') + token;
+        const pr = document.getElementById('dig-priority')?.value || '';
+        if (pr && !/[1-7]$/.test(token)) token = token + pr;
+      }
+      if (scopeId === 'place') {
+        const props = buildPlaceProps();
+        const cfg = buildPlaceConfigSuffix();
+        const ext = buildPlaceExtentSuffix();
+        if (props) token += props;
+        if (cfg) token += cfg;
+        if (ext) token += ext; // append extent at the very end
+        return token;
+      }
+      if (scopeId === 'zone') {
+        const props = buildZoneProps();
+        if (props) token += props;
+        return token;
+      }
+      if (scopeId === 'burrow') {
+        const props = buildBurrowProps();
+        if (props) token += props;
+        return token;
+      }
+      return token;
+    }
+
+    // Wire dig marker toggles to update label preview if tool is set
+    function wireDigMarkers() {
+      ['dig-mb','dig-mw','dig-md','dig-priority'].forEach(id => {
+        document.getElementById(id).addEventListener('change', updateToolUI);
+      });
+    }
+
+    // Wire property inputs to refresh preview
+    function wirePropInputs() {
+      const ids = [
+        'place-name','place-take-from','place-give-to','place-barrels','place-bins','place-wheelbarrows','place-containers',
+        'place-links-only','place-quantum','place-automelt','place-autotrade','place-autodump','place-autotrain','place-config','place-extent','place-props',
+        'zone-name','zone-location','zone-location-name','zone-profession','zone-props',
+        'burrow-name','burrow-create','burrow-civalert','burrow-props'
+      ];
+      ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const ev = (el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'number')) ? 'input' : 'change';
+        el.addEventListener(ev, updateToolUI);
+      });
+    }
+
+    function wireBuildSearch() {
+      const input = document.getElementById('build-search');
+      input.addEventListener('input', () => {
+        const q = input.value.trim().toLowerCase();
+        document.querySelectorAll('#build-groups .tool').forEach(btn => {
+          const val = (btn.getAttribute('data-tool')||'').toLowerCase();
+          const text = btn.textContent.toLowerCase();
+          const show = !q || val.includes(q) || text.includes(q);
+          btn.style.display = show ? '' : 'none';
+        });
+      });
+    }
+
+    function onCellDown(e, r, c) {
+      e.preventDefault();
+      state.painting = true;
+      const tool = composeTokenForPaint(state.activeTab);
+      state.lastPaintVal = (e.button === 2) ? '' : tool; // right-click erase
+      applyBrushAt(r, c, state.lastPaintVal);
+      document.addEventListener('mouseup', onMouseUpOnce, { once: true });
+    }
+
+    function init() {
+      document.getElementById('cols').value = defaultCols;
+      document.getElementById('rows').value = defaultRows;
+      // sync brush input to state and validate
+      const brushInput = document.getElementById('brush-size');
+      if (brushInput) {
+        brushInput.addEventListener('input', () => {
+          const n = parseInt(brushInput.value || '1', 10);
+          let v = isNaN(n) ? 1 : Math.max(1, Math.min(25, n));
+          state.brushSize = v;
+        });
+        const bInc = document.getElementById('brush-inc');
+        const bDec = document.getElementById('brush-dec');
+        bInc?.addEventListener('click', () => {
+          const next = Math.min(25, (getBrushSize() || 1) + 1);
+          state.brushSize = next;
+          brushInput.value = String(next);
+        });
+        bDec?.addEventListener('click', () => {
+          const next = Math.max(1, (getBrushSize() || 1) - 1);
+          state.brushSize = next;
+          brushInput.value = String(next);
+        });
+      }
+      ensureGrids();
+      renderTabs();
+      setActiveTab('dig');
+      renderToolCatalogs();
+      wireTools();
+      wireBuildSearch();
+      wireDigMarkers();
+      wirePropInputs();
+      updateToolUI();
+      applyZoom();
+      // Default tool per tab
+      state.selectedToolByTab['dig'] = 'd';
+      updateToolUI();
+      // Re-evaluate preview on window resize
+      window.addEventListener('resize', () => { maybeRenderPreview(); });
+      const prevToggle = document.getElementById('preview-toggle');
+      if (prevToggle) {
+        state.previewEnabled = !!prevToggle.checked;
+        prevToggle.addEventListener('change', () => {
+          state.previewEnabled = !!prevToggle.checked;
+          maybeRenderPreview();
+        });
+      }
+      // Initialize z-label and ensure first render uses active z
+      ensureGrids();
+      updateZLabel();
+      renderGrid();
+    }
+    init();
+  </script>
+</body>
+</html>
