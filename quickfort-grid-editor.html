@@ -116,10 +116,6 @@
         <button id="z-del" class="secondary" title="Delete current z-level">Del Z</button>
       </div>
       <label style="margin-left:8px;"><input id="preview-toggle" type="checkbox" checked /> Preview</label>
-      <div class="row" style="align-items:center; gap:8px; margin-left:6px;">
-        <label title="Mirror across vertical axis"><input id="mirror-v-toggle" type="checkbox" /> Mirror V</label>
-        <label title="Mirror across horizontal axis"><input id="mirror-h-toggle" type="checkbox" /> Mirror H</label>
-      </div>
       <button id="cleargrid" class="secondary">Clear Current Grid</button>
       <button id="help-btn" class="secondary" title="Usage help">?</button>
       <div id="help-pop" class="popover hidden">
@@ -148,6 +144,13 @@
             <label>Brush <input id="brush-size" type="number" min="1" max="25" value="1" /></label>
             <button id="brush-dec" class="secondary" title="Decrease brush">-</button>
             <button id="brush-inc" title="Increase brush">+</button>
+          </div>
+        </div>
+        <div class="section" id="mirror-tools" style="margin-top:6px;">
+          <h3>Mirror Axes</h3>
+          <div class="row" style="gap:12px; align-items:center; flex-wrap:wrap;">
+            <label title="Mirror across vertical axis"><input id="mirror-v-toggle" type="checkbox" /> Mirror V</label>
+            <label title="Mirror across horizontal axis"><input id="mirror-h-toggle" type="checkbox" /> Mirror H</label>
           </div>
         </div>
 
@@ -658,22 +661,19 @@ const state = {
       const coords = new Set();
       const key = (rr,cc)=> rr+","+cc;
       if (inBounds(r,c)) coords.add(key(r,c));
-      // mirror across vertical axis
+      // mirror across vertical/horizontal axes (support half-cell positions)
+      const alpha = Number(state.mirrorVIndex) || 0;
+      const beta = Number(state.mirrorHIndex) || 0;
       if (state.mirrorVEnabled) {
-        const a = state.mirrorVIndex|0; // boundary index
-        const c2 = 2*a - 1 - c;
+        const c2 = Math.round(2*alpha - 1 - c);
         if (inBounds(r, c2)) coords.add(key(r, c2));
       }
-      // mirror across horizontal axis
       if (state.mirrorHEnabled) {
-        const b = state.mirrorHIndex|0;
-        const r2 = 2*b - 1 - r;
+        const r2 = Math.round(2*beta - 1 - r);
         if (inBounds(r2, c)) coords.add(key(r2, c));
-        // both axes
         if (state.mirrorVEnabled) {
-          const a = state.mirrorVIndex|0;
-          const c2 = 2*a - 1 - c;
-          const r2b = 2*b - 1 - r;
+          const c2 = Math.round(2*alpha - 1 - c);
+          const r2b = Math.round(2*beta - 1 - r);
           if (inBounds(r2b, c2)) coords.add(key(r2b, c2));
         }
       }
@@ -1050,8 +1050,8 @@ const state = {
 
     // ===== Mirror Axes (UI + logic) =====
     function clampAxes() {
-      state.mirrorVIndex = Math.max(0, Math.min(state.cols, state.mirrorVIndex|0));
-      state.mirrorHIndex = Math.max(0, Math.min(state.rows, state.mirrorHIndex|0));
+      state.mirrorVIndex = Math.max(0, Math.min(state.cols, Number(state.mirrorVIndex)||0));
+      state.mirrorHIndex = Math.max(0, Math.min(state.rows, Number(state.mirrorHIndex)||0));
     }
     function getCellMetrics() {
       const r0 = gridEl.rows[0];
@@ -1065,15 +1065,29 @@ const state = {
       if (!rows || !rows[0]) return 0;
       if (a <= 0) return 0;
       if (a >= state.cols) return gridEl.offsetWidth;
-      const cell = rows[0].cells[a];
-      return cell ? cell.offsetLeft : 0;
+      const k = Math.floor(a);
+      const cell = rows[0].cells[k];
+      if (!cell) return 0;
+      const next = rows[0].cells[k+1];
+      const start = cell.offsetLeft;
+      const end = next ? next.offsetLeft : (start + cell.offsetWidth);
+      const t = a - k; // 0..1, 0=left border, 0.5=center, 1=right border
+      return start + (end - start) * t;
     }
     function hAxisTopPx(a) {
       if (!gridEl || gridEl.rows.length === 0) return 0;
       if (a <= 0) return 0;
       if (a >= state.rows) return gridEl.offsetHeight;
-      const row = gridEl.rows[a];
-      return row ? row.offsetTop : 0;
+      const k = Math.floor(a);
+      const row = gridEl.rows[k];
+      if (!row) return 0;
+      const nextRow = gridEl.rows[k+1];
+      const start = row.offsetTop;
+      const cell = row.cells[0];
+      const rowHeight = cell ? cell.offsetHeight : (nextRow ? (nextRow.offsetTop - start) : 0);
+      const end = nextRow ? nextRow.offsetTop : (start + rowHeight);
+      const t = a - k;
+      return start + (end - start) * t;
     }
     function startDragAxis(kind, e) {
       e.preventDefault(); e.stopPropagation();
@@ -1084,12 +1098,13 @@ const state = {
         if (state.draggingAxis === 'v' && cellW > 0) {
           let x = ev.clientX - rect.left;
           x = Math.max(0, Math.min(x, rect.width));
-          const idx = Math.round(x / cellW);
+          // snap to half-cell increments
+          const idx = Math.round(x / (cellW/2)) / 2;
           state.mirrorVIndex = Math.max(0, Math.min(state.cols, idx));
         } else if (state.draggingAxis === 'h' && cellH > 0) {
           let y = ev.clientY - rect.top;
           y = Math.max(0, Math.min(y, rect.height));
-          const idx = Math.round(y / cellH);
+          const idx = Math.round(y / (cellH/2)) / 2;
           state.mirrorHIndex = Math.max(0, Math.min(state.rows, idx));
         }
         renderAxesOverlay();
