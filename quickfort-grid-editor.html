@@ -38,6 +38,7 @@
     .tabs button.active { color: var(--fg); border-bottom: 2px solid var(--accent); }
     .workspace { display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
     .gridwrap { overflow: auto; background: #0e0e13; padding: 12px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
+    .grid-container { position: relative; display: inline-block; }
     table.grid { border-collapse: collapse; background: var(--grid); table-layout: fixed; }
     table.grid td { width: calc(var(--cell-size) * var(--zoom)); height: calc(var(--cell-size) * var(--zoom)); line-height: calc(var(--cell-size) * var(--zoom)); text-align: center; vertical-align: middle; white-space: nowrap; overflow: hidden; background: var(--cell); color: var(--fg); border: 1px solid #1a1a21; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: calc(var(--cell-font) * var(--zoom)); user-select: none; position: relative; }
     /* Slightly smaller text for property-heavy tokens (display-only) */
@@ -66,6 +67,17 @@
         repeating-linear-gradient(45deg, rgba(34,197,94,0.15) 0 8px, transparent 8px 16px),
         repeating-linear-gradient(-45deg, rgba(34,197,94,0.10) 0 8px, transparent 8px 16px);
       pointer-events: none; z-index: 1; }
+    /* Mirror axes overlay */
+    .axes-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 5; }
+    .axis-line { position: absolute; background: var(--accent); opacity: 0.7; }
+    .axis-line.v { width: 2px; top: 0; bottom: 0; }
+    .axis-line.h { height: 2px; left: 0; right: 0; }
+    .axis-handle { position: absolute; pointer-events: auto; }
+    .axis-handle.v { width: 14px; top: 0; bottom: 0; cursor: col-resize; transform: translateX(-50%); }
+    .axis-handle.h { height: 14px; left: 0; right: 0; cursor: row-resize; transform: translateY(-50%); }
+    .axis-handle .grip { position: absolute; background: var(--accent); opacity: 0.85; }
+    .axis-handle.v .grip { width: 2px; top: 0; bottom: 0; left: 50%; transform: translateX(-50%); }
+    .axis-handle.h .grip { height: 2px; left: 0; right: 0; top: 50%; transform: translateY(-50%); }
     /* Shape preview overlay: distinct purple tone above dig overlay */
     table.grid td.shape-preview::after { content: ""; position: absolute; inset: 0; box-sizing: border-box;
       border: 2px dashed #7c3aed; background-image:
@@ -104,6 +116,10 @@
         <button id="z-del" class="secondary" title="Delete current z-level">Del Z</button>
       </div>
       <label style="margin-left:8px;"><input id="preview-toggle" type="checkbox" checked /> Preview</label>
+      <div class="row" style="align-items:center; gap:8px; margin-left:6px;">
+        <label title="Mirror across vertical axis"><input id="mirror-v-toggle" type="checkbox" /> Mirror V</label>
+        <label title="Mirror across horizontal axis"><input id="mirror-h-toggle" type="checkbox" /> Mirror H</label>
+      </div>
       <button id="cleargrid" class="secondary">Clear Current Grid</button>
       <button id="help-btn" class="secondary" title="Usage help">?</button>
       <div id="help-pop" class="popover hidden">
@@ -290,7 +306,12 @@
     </aside>
     <section class="workspace">
       <div class="tabs" id="tabs"></div>
-      <div class="gridwrap"><table class="grid" id="grid"></table></div>
+      <div class="gridwrap">
+        <div id="grid-container" class="grid-container">
+          <div class="axes-overlay" id="axes-overlay"></div>
+          <table class="grid" id="grid"></table>
+        </div>
+      </div>
       <div class="statusbar">
         <div>
           <span>Active: <strong id="active-tab-label">dig</strong></span>
@@ -322,7 +343,7 @@
     const defaultCols = 30;
     const defaultRows = 20;
 
-    const state = {
+const state = {
       cols: defaultCols,
       rows: defaultRows,
       activeTab: 'dig',
@@ -336,8 +357,14 @@
       lastPaintVal: '',
       zoom: 1,
       brushSize: 1,
-      previewEnabled: true,
-      // shape tools
+  previewEnabled: true,
+  // mirror axes
+  mirrorVEnabled: false,
+  mirrorHEnabled: false,
+  mirrorVIndex: Math.floor(defaultCols/2), // vertical axis boundary index 0..cols
+  mirrorHIndex: Math.floor(defaultRows/2), // horizontal axis boundary index 0..rows
+  draggingAxis: null, // 'v' | 'h' | null
+  // shape tools
       selectedShape: 'free',    // 'free' | 'rect' | 'line' | 'fill' | 'circle'
       shapeOutline: false,
       shapeStart: null,         // {r,c} during drag
@@ -347,6 +374,8 @@
 
     const gridEl = document.getElementById('grid');
     const gridWrapEl = document.querySelector('.gridwrap');
+    const gridContainerEl = document.getElementById('grid-container');
+    const axesOverlayEl = document.getElementById('axes-overlay');
     const tabsEl = document.getElementById('tabs');
     const activeTabLbl = document.getElementById('active-tab-label');
     const activeToolLbl = document.getElementById('active-tool');
@@ -406,16 +435,17 @@
       });
     }
 
-    function setGridSize(newRows, newCols) {
-      const rows = Math.max(1, Math.min(300, parseInt(newRows, 10) || 1));
-      const cols = Math.max(1, Math.min(300, parseInt(newCols, 10) || 1));
-      if (rows === state.rows && cols === state.cols) return;
-      state.rows = rows; state.cols = cols;
-      const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(cols);
-      const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(rows);
-      resizeAllGrids(rows, cols);
-      renderGrid();
-    }
+  function setGridSize(newRows, newCols) {
+    const rows = Math.max(1, Math.min(300, parseInt(newRows, 10) || 1));
+    const cols = Math.max(1, Math.min(300, parseInt(newCols, 10) || 1));
+    if (rows === state.rows && cols === state.cols) return;
+    state.rows = rows; state.cols = cols;
+    clampAxes();
+    const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(cols);
+    const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(rows);
+    resizeAllGrids(rows, cols);
+    renderGrid();
+  }
 
     function renderTabs() {
       tabsEl.innerHTML = '';
@@ -489,7 +519,7 @@
       return s;
     }
 
-    function renderGrid() {
+  function renderGrid() {
       const mat = getMatrix(state.activeTab, state.activeZ);
       gridEl.innerHTML = '';
       clearShapePreview();
@@ -514,21 +544,23 @@
       }
       // After rendering the active grid, try to show a faded preview of the next grid (if space allows)
       maybeRenderPreview();
-    }
+      renderAxesOverlay();
+  }
 
     // Zoom handling (shared across all tabs)
     const MIN_ZOOM = 0.5;
     const MAX_ZOOM = 3;
     const ZOOM_STEP = 0.1;
-    function applyZoom() {
-      const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, state.zoom));
-      state.zoom = z;
-      document.documentElement.style.setProperty('--zoom', String(z));
-      const lbl = document.getElementById('zoom-label');
-      if (lbl) lbl.textContent = `${Math.round(z*100)}%`;
-      // Re-evaluate preview visibility when zoom changes
-      maybeRenderPreview();
-    }
+  function applyZoom() {
+    const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, state.zoom));
+    state.zoom = z;
+    document.documentElement.style.setProperty('--zoom', String(z));
+    const lbl = document.getElementById('zoom-label');
+    if (lbl) lbl.textContent = `${Math.round(z*100)}%`;
+    // Re-evaluate preview visibility when zoom changes
+    maybeRenderPreview();
+    renderAxesOverlay();
+  }
     function zoomIn() { state.zoom = +(state.zoom + ZOOM_STEP).toFixed(2); applyZoom(); }
     function zoomOut() { state.zoom = +(state.zoom - ZOOM_STEP).toFixed(2); applyZoom(); }
     function resetZoom() { state.zoom = 1; applyZoom(); }
@@ -607,19 +639,49 @@
 
     function applyTool(r, c, val) {
       const mat = getMatrix(state.activeTab, state.activeZ);
-      if (r < 0 || c < 0 || r >= mat.length || c >= mat[0].length) return;
-      mat[r][c] = val;
-      // update cell in DOM
-      const tr = gridEl.rows[r];
-      if (tr) {
-        const td = tr.cells[c];
-        if (td) {
-          // Use display mapping so arrows appear immediately on paint
-          td.textContent = displayTokenForGrid(val, state.activeTab);
-          styleCell(td, val, state.activeTab);
-          if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
+      const R = mat.length, C = mat[0].length;
+      function inBounds(rr, cc) { return rr>=0 && cc>=0 && rr<R && cc<C; }
+      function setCell(rr, cc, v) {
+        if (!inBounds(rr, cc)) return;
+        mat[rr][cc] = v;
+        const tr = gridEl.rows[rr];
+        if (tr) {
+          const td = tr.cells[cc];
+          if (td) {
+            td.textContent = displayTokenForGrid(v, state.activeTab);
+            styleCell(td, v, state.activeTab);
+            if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, rr, cc);
+          }
         }
       }
+      // original
+      const coords = new Set();
+      const key = (rr,cc)=> rr+","+cc;
+      if (inBounds(r,c)) coords.add(key(r,c));
+      // mirror across vertical axis
+      if (state.mirrorVEnabled) {
+        const a = state.mirrorVIndex|0; // boundary index
+        const c2 = 2*a - 1 - c;
+        if (inBounds(r, c2)) coords.add(key(r, c2));
+      }
+      // mirror across horizontal axis
+      if (state.mirrorHEnabled) {
+        const b = state.mirrorHIndex|0;
+        const r2 = 2*b - 1 - r;
+        if (inBounds(r2, c)) coords.add(key(r2, c));
+        // both axes
+        if (state.mirrorVEnabled) {
+          const a = state.mirrorVIndex|0;
+          const c2 = 2*a - 1 - c;
+          const r2b = 2*b - 1 - r;
+          if (inBounds(r2b, c2)) coords.add(key(r2b, c2));
+        }
+      }
+      // apply
+      coords.forEach(k=>{
+        const [rr,cc] = k.split(',').map(Number);
+        setCell(rr, cc, val);
+      });
       // Refresh previews so they reflect changes (esp. dig overlay)
       maybeRenderPreview();
     }
@@ -984,6 +1046,92 @@
       const ov = document.createElement('div');
       ov.className = 'dig-overlay';
       td.appendChild(ov);
+    }
+
+    // ===== Mirror Axes (UI + logic) =====
+    function clampAxes() {
+      state.mirrorVIndex = Math.max(0, Math.min(state.cols, state.mirrorVIndex|0));
+      state.mirrorHIndex = Math.max(0, Math.min(state.rows, state.mirrorHIndex|0));
+    }
+    function getCellMetrics() {
+      const r0 = gridEl.rows[0];
+      const td0 = r0 && r0.cells[0];
+      const cellW = td0 ? td0.offsetWidth : 0;
+      const cellH = td0 ? td0.offsetHeight : 0;
+      return { cellW, cellH };
+    }
+    function vAxisLeftPx(a) {
+      const rows = gridEl.rows;
+      if (!rows || !rows[0]) return 0;
+      if (a <= 0) return 0;
+      if (a >= state.cols) return gridEl.offsetWidth;
+      const cell = rows[0].cells[a];
+      return cell ? cell.offsetLeft : 0;
+    }
+    function hAxisTopPx(a) {
+      if (!gridEl || gridEl.rows.length === 0) return 0;
+      if (a <= 0) return 0;
+      if (a >= state.rows) return gridEl.offsetHeight;
+      const row = gridEl.rows[a];
+      return row ? row.offsetTop : 0;
+    }
+    function startDragAxis(kind, e) {
+      e.preventDefault(); e.stopPropagation();
+      state.draggingAxis = kind; // 'v' or 'h'
+      const onMove = (ev) => {
+        const rect = gridEl.getBoundingClientRect();
+        const { cellW, cellH } = getCellMetrics();
+        if (state.draggingAxis === 'v' && cellW > 0) {
+          let x = ev.clientX - rect.left;
+          x = Math.max(0, Math.min(x, rect.width));
+          const idx = Math.round(x / cellW);
+          state.mirrorVIndex = Math.max(0, Math.min(state.cols, idx));
+        } else if (state.draggingAxis === 'h' && cellH > 0) {
+          let y = ev.clientY - rect.top;
+          y = Math.max(0, Math.min(y, rect.height));
+          const idx = Math.round(y / cellH);
+          state.mirrorHIndex = Math.max(0, Math.min(state.rows, idx));
+        }
+        renderAxesOverlay();
+      };
+      const onUp = () => {
+        state.draggingAxis = null;
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp, { once: true });
+    }
+    function renderAxesOverlay() {
+      if (!axesOverlayEl || !gridEl) return;
+      clampAxes();
+      // size overlay to grid
+      axesOverlayEl.style.width = gridEl.offsetWidth + 'px';
+      axesOverlayEl.style.height = gridEl.offsetHeight + 'px';
+      axesOverlayEl.innerHTML = '';
+      if (!state.mirrorVEnabled && !state.mirrorHEnabled) return;
+      // vertical axis
+      if (state.mirrorVEnabled) {
+        const left = vAxisLeftPx(state.mirrorVIndex);
+        const handle = document.createElement('div');
+        handle.className = 'axis-handle v';
+        handle.style.left = left + 'px';
+        const grip = document.createElement('div'); grip.className = 'grip';
+        handle.appendChild(grip);
+        handle.addEventListener('mousedown', (e) => startDragAxis('v', e));
+        axesOverlayEl.appendChild(handle);
+      }
+      // horizontal axis
+      if (state.mirrorHEnabled) {
+        const top = hAxisTopPx(state.mirrorHIndex);
+        const handle = document.createElement('div');
+        handle.className = 'axis-handle h';
+        handle.style.top = top + 'px';
+        const grip = document.createElement('div'); grip.className = 'grip';
+        handle.appendChild(grip);
+        handle.addEventListener('mousedown', (e) => startDragAxis('h', e));
+        axesOverlayEl.appendChild(handle);
+      }
     }
 
     // Color coding
@@ -1979,6 +2127,25 @@
           maybeRenderPreview();
         });
       }
+      // Mirror toggles
+      const mvToggle = document.getElementById('mirror-v-toggle');
+      const mhToggle = document.getElementById('mirror-h-toggle');
+      if (mvToggle) {
+        state.mirrorVEnabled = !!mvToggle.checked;
+        mvToggle.addEventListener('change', () => {
+          state.mirrorVEnabled = !!mvToggle.checked;
+          renderAxesOverlay();
+        });
+      }
+      if (mhToggle) {
+        state.mirrorHEnabled = !!mhToggle.checked;
+        mhToggle.addEventListener('change', () => {
+          state.mirrorHEnabled = !!mhToggle.checked;
+          renderAxesOverlay();
+        });
+      }
+      // Update axes overlay on resize as well
+      window.addEventListener('resize', () => { renderAxesOverlay(); });
       // Initialize z-label and ensure first render uses active z
       ensureGrids();
       updateZLabel();
