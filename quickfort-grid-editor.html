@@ -342,6 +342,12 @@
           <button id="cut-selection" class="secondary" disabled>Cut</button>
           <button id="paste-selection" class="secondary" disabled>Paste</button>
           <button id="clear-selection" class="secondary" disabled>Clear Selection</button>
+          <span id="transform-controls" style="display:none; gap:6px; align-items:center;">
+            <span class="sep" aria-hidden="true"></span>
+            <button id="rotate-selection" class="secondary" title="Rotate 90° clockwise" disabled>Rotate</button>
+            <button id="mirror-y-selection" class="secondary" title="Mirror Y (flip horizontally)" disabled>Mirror Y</button>
+            <button id="mirror-x-selection" class="secondary" title="Mirror X (flip vertically)" disabled>Mirror X</button>
+          </span>
           <label class="note" style="margin-left:8px; display:inline-flex; align-items:center; gap:6px;">
             <input id="paste-skip-blanks" type="checkbox" /> Skip blanks
           </label>
@@ -773,6 +779,10 @@ const state = {
       const cutBtn = document.getElementById('cut-selection');
       const clearBtn = document.getElementById('clear-selection');
       const pasteBtn = document.getElementById('paste-selection');
+      const rotateBtn = document.getElementById('rotate-selection');
+      const mirrorXBtn = document.getElementById('mirror-x-selection');
+      const mirrorYBtn = document.getElementById('mirror-y-selection');
+      const transformWrap = document.getElementById('transform-controls');
       const skipCb = document.getElementById('paste-skip-blanks');
       const has = !!state.selectionRect;
       if (copyBtn) copyBtn.disabled = !has;
@@ -786,6 +796,13 @@ const state = {
         skipCb.disabled = !state.copyBuffer;
         skipCb.checked = !!state.pasteSkipBlanks;
       }
+      // Show transform controls only in paste mode with a buffer
+      const showTransforms = (state.pasteMode && !!state.copyBuffer);
+      if (transformWrap) transformWrap.style.display = showTransforms ? 'inline-flex' : 'none';
+      const enableTransforms = showTransforms;
+      if (rotateBtn) rotateBtn.disabled = !enableTransforms;
+      if (mirrorXBtn) mirrorXBtn.disabled = !enableTransforms;
+      if (mirrorYBtn) mirrorYBtn.disabled = !enableTransforms;
       const toggle = document.getElementById('select-toggle');
       if (toggle) toggle.classList.toggle('active', !!state.selectionMode);
       if (gridContainerEl) {
@@ -821,6 +838,46 @@ const state = {
       state.selecting = false;
       state.selStart = null;
       // enable paste button
+      updateSelectionButtons();
+    }
+
+    // ===== Selection/paste transforms =====
+    function rotateMatrixCW(mat) {
+      const R = mat.length; if (!R) return [];
+      const C = mat[0].length;
+      const out = Array.from({length: C}, () => Array(R).fill(''));
+      for (let r=0; r<R; r++) {
+        for (let c=0; c<C; c++) {
+          out[c][R-1-r] = mat[r][c];
+        }
+      }
+      return out;
+    }
+    function mirrorMatrixX(mat) { // flip vertically (mirror across X axis)
+      const R = mat.length; if (!R) return [];
+      const C = mat[0].length;
+      const out = Array.from({length:R}, (_, r) => Array(C).fill(''));
+      for (let r=0; r<R; r++) {
+        for (let c=0; c<C; c++) out[R-1-r][c] = mat[r][c];
+      }
+      return out;
+    }
+    function mirrorMatrixY(mat) { // flip horizontally (mirror across Y axis)
+      const R = mat.length; if (!R) return [];
+      const C = mat[0].length;
+      const out = Array.from({length:R}, () => Array(C).fill(''));
+      for (let r=0; r<R; r++) {
+        for (let c=0; c<C; c++) out[r][C-1-c] = mat[r][c];
+      }
+      return out;
+    }
+    function transformSelectionOrBuffer(kind) {
+      // Only active in paste mode; selection state is ignored.
+      if (!(state.pasteMode && state.copyBuffer)) return;
+      if (kind === 'rotate') state.copyBuffer = rotateMatrixCW(state.copyBuffer);
+      else if (kind === 'mx') state.copyBuffer = mirrorMatrixX(state.copyBuffer);
+      else if (kind === 'my') state.copyBuffer = mirrorMatrixY(state.copyBuffer);
+      applyPastePreviewFromHover();
       updateSelectionButtons();
     }
 
@@ -2001,6 +2058,13 @@ const state = {
       state.pasteSkipBlanks = !!pasteSkipCb.checked;
       if (state.pasteMode) applyPastePreviewFromHover();
     });
+    // Transform controls
+    const rotBtn = document.getElementById('rotate-selection');
+    const mxBtn = document.getElementById('mirror-x-selection');
+    const myBtn = document.getElementById('mirror-y-selection');
+    rotBtn?.addEventListener('click', () => transformSelectionOrBuffer('rotate'));
+    mxBtn?.addEventListener('click', () => transformSelectionOrBuffer('mx'));
+    myBtn?.addEventListener('click', () => transformSelectionOrBuffer('my'));
     // Keyboard shortcuts: Esc clears selection, Ctrl/Cmd+C copies selection if present
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
@@ -2010,6 +2074,9 @@ const state = {
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
         if (state.selectionRect) { e.preventDefault(); copySelectedArea(); }
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'x' || e.key === 'X')) {
+        if (state.selectionRect) { e.preventDefault(); cutSelectedArea(); }
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
         if (state.copyBuffer) {
