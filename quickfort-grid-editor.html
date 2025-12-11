@@ -102,8 +102,26 @@
     table.grid td .paste-ghost { position: absolute; inset: 0; box-sizing: border-box; pointer-events: none; z-index: 4;
       display: flex; align-items: center; justify-content: center; padding: 0 2px; border-radius: 0; font-weight: 600; opacity: 0.85; }
     /* Help popover */
-    .popover { position: absolute; right: 0; top: calc(100% + 8px); background: var(--panel); color: var(--fg2); border: 1px solid var(--muted); border-radius: 8px; padding: 8px 10px; font-size: 12px; width: max-content; max-width: 260px; box-shadow: 0 6px 18px rgba(0,0,0,0.25); z-index: 10; }
-    .popover strong { color: var(--fg); }
+    .popover {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      background: var(--panel);
+      color: var(--fg2);
+      border: 1px solid var(--muted);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 12.5px;
+      line-height: 1.45;
+      width: max-content;
+      max-width: min(460px, calc(100vw - 32px));
+      max-height: min(60vh, 520px);
+      overflow: auto;
+      box-shadow: 0 12px 24px rgba(0,0,0,0.35);
+      z-index: 10;
+    }
+    .popover strong { color: var(--fg); display: block; margin: 6px 0 4px; font-weight: 700; }
+    .popover strong:first-child { margin-top: 0; }
     .statusbar .actions .sep { display: inline-block; width: 1px; height: 24px; background: var(--muted); margin: 0 10px; vertical-align: middle; }
   </style>
 </head>
@@ -130,11 +148,46 @@
         <button id="z-add" class="secondary" title="Add new z-level">Add Z</button>
         <button id="z-del" class="secondary" title="Delete current z-level">Del Z</button>
       </div>
-      <label style="margin-left:8px;"><input id="preview-toggle" type="checkbox" checked /> Preview</label>
+      <label style="margin-left:8px;"><input id="preview-toggle" type="checkbox" /> Preview</label>
       <button id="cleargrid" class="secondary">Clear Current Grid</button>
       <button id="help-btn" class="secondary" title="Usage help">?</button>
       <div id="help-pop" class="popover hidden">
-        Left-click paint, right-click erase, drag to paint.
+        <strong>Basics</strong><br>
+        Left-click paints the active tool, right-click erases. Drag to paint across multiple cells.
+        Grid size, zoom, and Z-level are controlled in the top bar.<br><br>
+
+        <strong>Shapes & brush</strong><br>
+        Use the Shape dropdown (Freehand / Rect / Line / Circle / Fill) plus the Brush size
+        to control how you paint. "Hollow" draws only outlines for Rect/Circle.<br><br>
+
+        <strong>Mirror & axes</strong><br>
+        Mirror V / H paints symmetrically across the green axes. Drag the axis handles in the
+        grid to move the mirror lines.<br><br>
+
+        <strong>Z-levels & dig overlay</strong><br>
+        Z+ / Z− switch floors, Add Z / Del Z change how many layers exist. The "Preview"
+        checkbox shows the next Z-level as a faded overlay to help align towers, stair stacks,
+        etc. Dig designations from the #dig tab are shown as a green overlay on the other tabs
+        for alignment.<br><br>
+
+        <strong>Selection, paste & transforms</strong><br>
+        "Select Area" → drag to mark a rectangle. Use Copy / Cut / Paste / Clear in the
+        status bar. In Paste mode you get a ghost preview under the cursor; right-click or Esc
+        cancels. "Skip blanks" avoids overwriting non-empty cells. Rotate / Mirror X / Mirror Y
+        transform the paste buffer before placing.<br><br>
+
+        <strong>CSV / Quickfort I/O</strong><br>
+        "Copy to clipboard" copies the current tab as multi-Z quickfort CSV. "Download CSV"
+        saves the current tab, "Export All" bundles all tabs into one file, "Load" imports
+        quickfort CSV (multi-tab, multi-Z supported).<br><br>
+
+        <strong>Undo & keyboard shortcuts</strong><br>
+        Undo / Redo step through your changes.<br>
+        Ctrl/Cmd+Z / Ctrl/Cmd+Y (or Ctrl/Cmd+Shift+Z) – undo/redo<br>
+        Ctrl/Cmd + + / − / 0 – zoom in/out/reset<br>
+        Ctrl/Cmd+C – copy current selection<br>
+        Ctrl/Cmd+V – toggle paste mode<br>
+        Esc – clear selection or exit paste mode
       </div>
     </div>
   </header>
@@ -337,6 +390,9 @@
           <span id="pos" class="note"></span>
         </div>
         <div class="actions">
+          <button id="undo-btn" class="secondary" title="Undo (Ctrl+Z)" disabled>Undo</button>
+          <button id="redo-btn" class="secondary" title="Redo (Ctrl+Y / Ctrl+Shift+Z)" disabled>Redo</button>
+          <span class="sep" aria-hidden="true"></span>
           <button id="select-toggle" class="secondary" title="Toggle selection mode">Select Area</button>
           <button id="copy-selection" class="secondary" disabled>Copy Selection</button>
           <button id="cut-selection" class="secondary" disabled>Cut</button>
@@ -390,7 +446,7 @@ const state = {
       lastPaintVal: '',
       zoom: 1,
       brushSize: 1,
-  previewEnabled: true,
+  previewEnabled: false,
   // mirror axes
   mirrorVEnabled: false,
   mirrorHEnabled: false,
@@ -415,6 +471,11 @@ const state = {
       pasteSkipBlanks: false,
       pasteHover: null,       // {r,c} for current hover when in paste mode
       pastePreviewCells: new Set(),
+      // undo/redo history (per tab+z)
+      history: {},              // { [tabId]: Array<{entries:Array, idx:number}> }
+      currentAction: null,      // { tab, z, cells: Map<'r,c', {r,c,old,new}> }
+      isUndoRedo: false,        // guard during undo/redo application
+      historyCap: 50,           // max actions to keep per tab+z
     };
 
     const gridEl = document.getElementById('grid');
@@ -441,6 +502,15 @@ const state = {
         if (!state.selectedToolByTab[t.id]) state.selectedToolByTab[t.id] = '';
       });
       clampActiveZ();
+    }
+
+    function ensureHistory() {
+      Tabs.forEach(t => {
+        if (!state.history[t.id]) state.history[t.id] = [];
+        while (state.history[t.id].length < state.zCount) {
+          state.history[t.id].push({ entries: [], idx: 0 });
+        }
+      });
     }
 
     function getMatrix(tabId = state.activeTab, z = state.activeZ) {
@@ -595,6 +665,9 @@ const state = {
       applySelectionOverlayFromRect();
       // re-apply paste preview if we have a hover anchor
       applyPastePreviewFromHover();
+      // ensure history buckets exist and refresh undo/redo buttons
+      ensureHistory();
+      updateUndoRedoButtons();
   }
 
     // Zoom handling (shared across all tabs)
@@ -619,7 +692,9 @@ const state = {
       e.preventDefault();
       // Paste mode: paste buffer at clicked origin
       if (state.pasteMode && state.copyBuffer && e.button === 0) {
+        historyBegin();
         pasteBufferAt(r, c);
+        historyCommit();
         return;
       }
       if (state.pasteMode && e.button === 2) { // right-click cancels paste mode
@@ -652,11 +727,14 @@ const state = {
       state.lastPaintVal = val;
 
       if (shape === 'fill') {
+        historyBegin();
         floodFill(r, c, val);
+        historyCommit();
         return;
       }
 
       if (shape === 'free') {
+        historyBegin();
         state.painting = true;
         applyBrushAt(r, c, val);
         document.addEventListener('mouseup', onMouseUpOnce, { once: true });
@@ -665,6 +743,7 @@ const state = {
 
       // start shape drag (rect, line, circle)
       state.shaping = true;
+      historyBegin();
       state.shapeStart = { r, c };
       state.shapeLast = { r, c };
       // initial preview (single cell)
@@ -709,8 +788,9 @@ const state = {
     }
     function onMouseUpOnce() {
       const wasShaping = state.shaping && state.shapeStart;
+      const wasPainting = state.painting;
       state.painting = false;
-      if (!wasShaping) return;
+      if (!wasShaping) { if (wasPainting) { historyCommit(); } return; }
       const { r: r0, c: c0 } = state.shapeStart;
       const { r: r1, c: c1 } = state.shapeLast || state.shapeStart;
       const shape = state.selectedShape;
@@ -728,6 +808,7 @@ const state = {
       state.shaping = false;
       state.shapeStart = null;
       state.shapeLast = null;
+      historyCommit();
     }
 
     function onSelectMouseUpOnce() {
@@ -899,24 +980,14 @@ const state = {
       const lines = matrixRowsToCSVLines(sub);
       copyToClipboard(lines.join('\n'));
       state.copyBuffer = sub;
-      // clear the selected area
+      // clear the selected area as a single history action
+      historyBegin();
       for (let r=r0; r<=r1; r++) {
         for (let c=c0; c<=c1; c++) {
-          mat[r][c] = '';
-          // update DOM only if we are viewing the same tab/z
-          if (state.activeTab === rect.tab && state.activeZ === rect.z) {
-            const tr = gridEl.rows[r];
-            if (tr) {
-              const td = tr.cells[c];
-              if (td) {
-                td.textContent = '';
-                styleCell(td, '', state.activeTab);
-                if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
-              }
-            }
-          }
+          setCellValue(rect.tab, rect.z, r, c, '');
         }
       }
+      historyCommit();
       maybeRenderPreview();
       // clear selection overlay and exit modes
       clearSelection();
@@ -938,17 +1009,8 @@ const state = {
           if (rr<0 || cc<0 || rr>=R || cc>=C) continue;
           const v = state.copyBuffer[dr][dc] ?? '';
           if (state.pasteSkipBlanks && (v === '' || v == null)) continue;
-          // Direct set (no mirroring)
-          mat[rr][cc] = v;
-          const tr = gridEl.rows[rr];
-          if (tr) {
-            const td = tr.cells[cc];
-            if (td) {
-              td.textContent = displayTokenForGrid(v, state.activeTab);
-              styleCell(td, v, state.activeTab);
-              if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, rr, cc);
-            }
-          }
+          // Direct set (no mirroring) with history recording
+          setCellValue(state.activeTab, state.activeZ, rr, cc, v);
         }
       }
       maybeRenderPreview();
@@ -961,19 +1023,7 @@ const state = {
       const mat = getMatrix(state.activeTab, state.activeZ);
       const R = mat.length, C = mat[0].length;
       function inBounds(rr, cc) { return rr>=0 && cc>=0 && rr<R && cc<C; }
-      function setCell(rr, cc, v) {
-        if (!inBounds(rr, cc)) return;
-        mat[rr][cc] = v;
-        const tr = gridEl.rows[rr];
-        if (tr) {
-          const td = tr.cells[cc];
-          if (td) {
-            td.textContent = displayTokenForGrid(v, state.activeTab);
-            styleCell(td, v, state.activeTab);
-            if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, rr, cc);
-          }
-        }
-      }
+      const setCell = (rr, cc, v) => { if (!inBounds(rr,cc)) return; setCellValue(state.activeTab, state.activeZ, rr, cc, v); };
       // original
       const coords = new Set();
       const key = (rr,cc)=> rr+","+cc;
@@ -1001,6 +1051,95 @@ const state = {
       });
       // Refresh previews so they reflect changes (esp. dig overlay)
       maybeRenderPreview();
+    }
+
+    // history-aware cell setter
+    function setCellValue(tabId, z, rr, cc, v) {
+      ensureGrids(); ensureHistory();
+      const mat = state.grids[tabId][z];
+      if (!mat || rr<0 || cc<0 || rr>=mat.length || cc>=mat[0].length) return;
+      const prev = mat[rr][cc];
+      if (prev === v) return;
+      if (!state.isUndoRedo && state.currentAction) {
+        const key = rr + ',' + cc;
+        if (!state.currentAction.cells.has(key)) {
+          state.currentAction.cells.set(key, { r: rr, c: cc, old: prev, new: v });
+        } else {
+          const rec = state.currentAction.cells.get(key);
+          rec.new = v;
+        }
+      }
+      mat[rr][cc] = v;
+      if (tabId === state.activeTab && z === state.activeZ) {
+        const tr = gridEl.rows[rr];
+        if (tr) {
+          const td = tr.cells[cc];
+          if (td) {
+            td.textContent = displayTokenForGrid(v, tabId);
+            styleCell(td, v, tabId);
+            if (tabId !== 'dig') maybeApplyDigOverlay(td, rr, cc);
+          }
+        }
+      }
+    }
+
+    function getHistoryBucket(tabId = state.activeTab, z = state.activeZ) {
+      ensureHistory();
+      return state.history[tabId][z];
+    }
+
+    function historyBegin() {
+      state.currentAction = { tab: state.activeTab, z: state.activeZ, cells: new Map() };
+    }
+
+    function historyCommit() {
+      const act = state.currentAction;
+      if (!act) return;
+      const changes = Array.from(act.cells.values());
+      state.currentAction = null;
+      if (!changes.length) return;
+      const bucket = getHistoryBucket(act.tab, act.z);
+      if (bucket.idx < bucket.entries.length) bucket.entries.splice(bucket.idx);
+      bucket.entries.push({ changes });
+      const cap = Math.max(1, state.historyCap|0 || 50);
+      if (bucket.entries.length > cap) {
+        const drop = bucket.entries.length - cap;
+        bucket.entries.splice(0, drop);
+        bucket.idx = Math.max(0, bucket.idx - drop);
+      }
+      bucket.idx = bucket.entries.length;
+      updateUndoRedoButtons();
+    }
+
+    function historyUndo() {
+      const bucket = getHistoryBucket();
+      if (!bucket || bucket.idx <= 0) return;
+      const idx = bucket.idx - 1;
+      const entry = bucket.entries[idx];
+      state.isUndoRedo = true;
+      try {
+        entry.changes.forEach(ch => setCellValue(state.activeTab, state.activeZ, ch.r, ch.c, ch.old));
+      } finally {
+        state.isUndoRedo = false;
+      }
+      bucket.idx = idx;
+      maybeRenderPreview();
+      updateUndoRedoButtons();
+    }
+
+    function historyRedo() {
+      const bucket = getHistoryBucket();
+      if (!bucket || bucket.idx >= bucket.entries.length) return;
+      const entry = bucket.entries[bucket.idx];
+      state.isUndoRedo = true;
+      try {
+        entry.changes.forEach(ch => setCellValue(state.activeTab, state.activeZ, ch.r, ch.c, ch.new));
+      } finally {
+        state.isUndoRedo = false;
+      }
+      bucket.idx = bucket.idx + 1;
+      maybeRenderPreview();
+      updateUndoRedoButtons();
     }
 
     function getBrushSize() {
@@ -1964,8 +2103,15 @@ const state = {
     rowsInc?.addEventListener('click', () => setGridSize(state.rows + 1, state.cols));
     rowsDec?.addEventListener('click', () => setGridSize(state.rows - 1, state.cols));
     document.getElementById('cleargrid').addEventListener('click', () => {
-      const mat = makeMatrix(state.rows, state.cols);
-      setMatrix(state.activeTab, state.activeZ, mat);
+      // Clear only current tab & z; record as a single action
+      const mat = getMatrix(state.activeTab, state.activeZ);
+      historyBegin();
+      for (let r=0; r<mat.length; r++) {
+        for (let c=0; c<mat[0].length; c++) {
+          if (mat[r][c]) setCellValue(state.activeTab, state.activeZ, r, c, '');
+        }
+      }
+      historyCommit();
       renderGrid();
     });
     // Zoom buttons
@@ -2013,6 +2159,10 @@ const state = {
         if (!state.grids[t.id]) state.grids[t.id] = [];
         if (state.grids[t.id].length > 1) {
           state.grids[t.id].splice(state.activeZ, 1);
+        }
+        // keep history arrays in sync with z-levels
+        if (state.history && state.history[t.id] && state.history[t.id].length > 1) {
+          state.history[t.id].splice(state.activeZ, 1);
         }
       });
       state.zCount = Math.max(1, state.zCount - 1);
@@ -2067,6 +2217,9 @@ const state = {
     myBtn?.addEventListener('click', () => transformSelectionOrBuffer('my'));
     // Keyboard shortcuts: Esc clears selection, Ctrl/Cmd+C copies selection if present
     document.addEventListener('keydown', (e) => {
+      // Avoid interfering with typing in inputs/textareas/contenteditable
+      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+      const isEditable = tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable);
       if (e.key === 'Escape') {
         if (state.pasteMode) { state.pasteMode = false; clearPastePreview(); updateSelectionButtons(); return; }
         clearSelection();
@@ -2086,11 +2239,40 @@ const state = {
           updateSelectionButtons();
         }
       }
+      // Undo / Redo
+      if ((e.ctrlKey || e.metaKey) && !isEditable) {
+        const k = e.key;
+        if (k === 'z' || k === 'Z') {
+          e.preventDefault();
+          if (e.shiftKey) historyRedo(); else historyUndo();
+        } else if (k === 'y' || k === 'Y') {
+          e.preventDefault();
+          historyRedo();
+        }
+      }
     });
 
     // (Header project save/load removed to match the copy file.)
 
     // Wire statusbar actions
+    const undoBtn = document.getElementById('undo-btn');
+    const redoBtn = document.getElementById('redo-btn');
+    function updateUndoRedoButtons() {
+      try {
+        ensureHistory();
+        const bucket = state.history?.[state.activeTab]?.[state.activeZ];
+        const canUndo = !!bucket && bucket.idx > 0;
+        const canRedo = !!bucket && bucket.idx < bucket.entries.length;
+        if (undoBtn) undoBtn.disabled = !canUndo;
+        if (redoBtn) redoBtn.disabled = !canRedo;
+      } catch (_) {
+        if (undoBtn) undoBtn.disabled = true;
+        if (redoBtn) redoBtn.disabled = true;
+      }
+    }
+    undoBtn?.addEventListener('click', () => historyUndo());
+    redoBtn?.addEventListener('click', () => historyRedo());
+
     document.getElementById('copycsv').addEventListener('click', () => {
       const csv = tabToMultiZCSV(state.activeTab);
       copyToClipboard(csv);
@@ -2159,81 +2341,3 @@ const state = {
     });
 
     // Import a single sheet (matrix rows) into multi-z layers using #> / #< rows
-    function importSectionToMultiZ(tabId, rows) {
-      let currentZ = 0;
-      const matrices = [makeMatrix(state.rows, state.cols)];
-      function ensureLocalZ(idx) {
-        while (matrices.length <= idx) matrices.push(makeMatrix(state.rows, state.cols));
-      }
-      let rr = 0;
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i] || [];
-        const first = String(row[0] ?? '').trim();
-        const m = first.match(/^#([<>])(\d+)?$/);
-        if (m) {
-          const dir = m[1];
-          const step = m[2] ? parseInt(m[2], 10) : 1;
-          if (dir === '>') currentZ += step; else if (dir === '<') currentZ = Math.max(0, currentZ - step);
-          ensureLocalZ(currentZ);
-          rr = 0;
-          continue;
-        }
-        ensureLocalZ(currentZ);
-        const mat = matrices[currentZ];
-        if (rr >= state.rows) continue;
-        for (let c = 0; c < Math.min(row.length, state.cols); c++) {
-          mat[rr][c] = row[c] ?? '';
-        }
-        rr++;
-      }
-      // extend global zCount if needed and ensure global structures
-      if (matrices.length > state.zCount) state.zCount = matrices.length;
-      ensureGrids();
-      resizeAllGrids(state.rows, state.cols);
-      // copy into global state for this tab
-      for (let z = 0; z < matrices.length; z++) {
-        setMatrix(tabId, z, matrices[z]);
-      }
-      clampActiveZ();
-      updateZLabel();
-    }
-
-    // Help popover wiring
-    (function wireHelpPopover(){
-      const btn = document.getElementById('help-btn');
-      const pop = document.getElementById('help-pop');
-      if (!btn || !pop) return;
-      const hide = () => { pop.classList.add('hidden'); };
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        pop.classList.toggle('hidden');
-      });
-      document.addEventListener('click', (e) => {
-        const t = e.target;
-        if (t === btn || pop.contains(t)) return;
-        hide();
-      });
-      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
-    })();
-
-    // Init
-    // Token catalogs from DFHack quickfort guide
-    const DIG_BASIC = [
-      ['d','Dig'], ['h','Channel'], ['u','Up stair'], ['j','Down stair'], ['i','Up/Down stair'], ['r','Ramp'], ['z','Remove up stairs/ramps'],
-      ['n','Remove construction'], ['M','Toggle marker/blueprint'], ['v','Toggle engraving visibility'], ['T','Carve track (generic)'],
-      ['t','Chop trees'], ['p','Gather plants'], ['s','Smooth'], ['e','Engrave'], ['F','Fortification'], ['x','Remove designation'], ['','Eraser']
-    ];
-    const DIG_FLAGS = [
-      ['bc','Claim items'], ['bf','Forbid items'], ['bm','Melt items'], ['bM','Unmelt items'], ['bd','Dump items'], ['bD','Undump items'], ['bh','Hide items'], ['bH','Unhide items'], ['oh','High traffic'], ['on','Normal traffic'], ['ol','Low traffic'], ['or','Restricted traffic']
-    ];
-    const DIG_TRACKS = [
-      'trackN','trackS','trackE','trackW','trackNS','trackEW','trackNE','trackNW','trackSE','trackSW','trackNSE','trackNSW','trackNEW','trackSEW','trackNSEW'
-    ];
-
-    const PLACE_STOCKPILES = [
-      ['','Eraser'],
-      ['a','animal'], ['f','food'], ['u','furniture'], ['n','coins'], ['y','corpses'], ['r','refuse'], ['s','stone'], ['w','wood'], ['e','gem'], ['b','barsblocks'], ['h','cloth'], ['l','leather'], ['z','ammo'], ['S','sheets'], ['g','finished goods'], ['p','weapons'], ['d','armor'], ['c','custom']
-    ];
-
-    const ZONE_TYPES = [
-      ['','Eraser'],
