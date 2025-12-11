@@ -20,6 +20,8 @@
     input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     header button { padding: 8px 10px; background: var(--accent); color: #021018; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
     header button.secondary { background: var(--muted); color: var(--fg2); }
+    /* Visual toggle for header/status buttons in active mode */
+    button.active { outline: 2px solid var(--accent); background: #13232d; color: var(--accent2); }
     main { display: grid; grid-template-columns: 280px 1fr; gap: 0; height: calc(100% - 54px); }
     aside { border-right: 1px solid var(--muted); background: var(--panel); overflow: auto; }
     .tools { padding: 12px; }
@@ -45,6 +47,14 @@
     table.grid td.mini-token { font-size: calc(var(--cell-font) * var(--zoom) * 0.85) !important; }
     table.grid td:hover { background: var(--cell-hover); }
     table.grid td.active { background: var(--cell-active); }
+    /* Persistent selection overlay */
+    table.grid td.selected::after { content: ""; position: absolute; inset: 0; box-sizing: border-box;
+      border: 2px solid #22c55e; /* accent */
+      background: rgba(34,197,94,0.10);
+      pointer-events: none; z-index: 3; }
+    /* Mode cursors */
+    .grid-container.select-mode table.grid td { cursor: crosshair; }
+    .grid-container.paste-mode table.grid td { cursor: copy; }
     .statusbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-top: 1px solid var(--muted); background: var(--panel); color: var(--fg2); font-size: 12px; }
     .statusbar .actions { display: flex; gap: 8px; }
     .statusbar .actions button { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--muted); background: var(--cell); color: var(--fg); cursor: pointer; }
@@ -87,9 +97,14 @@
     .hint { color: var(--warn); }
     .row { display: flex; gap: 8px; align-items: center; }
     .row input[type=text] { flex: 1; padding: 8px; background: var(--cell); border: 1px solid var(--muted); color: var(--fg); border-radius: 8px; }
+    /* Paste hover preview overlay using a real element to render token text */
+    table.grid td.paste-preview { position: relative; }
+    table.grid td .paste-ghost { position: absolute; inset: 0; box-sizing: border-box; pointer-events: none; z-index: 4;
+      display: flex; align-items: center; justify-content: center; padding: 0 2px; border-radius: 0; font-weight: 600; opacity: 0.85; }
     /* Help popover */
     .popover { position: absolute; right: 0; top: calc(100% + 8px); background: var(--panel); color: var(--fg2); border: 1px solid var(--muted); border-radius: 8px; padding: 8px 10px; font-size: 12px; width: max-content; max-width: 260px; box-shadow: 0 6px 18px rgba(0,0,0,0.25); z-index: 10; }
     .popover strong { color: var(--fg); }
+    .statusbar .actions .sep { display: inline-block; width: 1px; height: 24px; background: var(--muted); margin: 0 10px; vertical-align: middle; }
   </style>
 </head>
 <body>
@@ -322,6 +337,15 @@
           <span id="pos" class="note"></span>
         </div>
         <div class="actions">
+          <button id="select-toggle" class="secondary" title="Toggle selection mode">Select Area</button>
+          <button id="copy-selection" class="secondary" disabled>Copy Selection</button>
+          <button id="cut-selection" class="secondary" disabled>Cut</button>
+          <button id="paste-selection" class="secondary" disabled>Paste</button>
+          <button id="clear-selection" class="secondary" disabled>Clear Selection</button>
+          <label class="note" style="margin-left:8px; display:inline-flex; align-items:center; gap:6px;">
+            <input id="paste-skip-blanks" type="checkbox" /> Skip blanks
+          </label>
+          <span class="sep" aria-hidden="true"></span>
           <button id="copycsv">Copy to clipboard</button>
           <button id="downloadcsv" class="primary">Download CSV</button>
           <button id="exportall" class="secondary">Export All</button>
@@ -373,6 +397,18 @@ const state = {
       shapeStart: null,         // {r,c} during drag
       shaping: false,
       previewCells: new Set(),  // Set of "r,c" for shape preview
+      // selection tool
+      selectionMode: false,
+      selecting: false,
+      selStart: null,           // {r,c} during selection drag
+      selectionRect: null,      // {r0,c0,r1,c1, tab, z}
+      selectionCells: new Set(),
+      // clipboard/paste
+      copyBuffer: null,       // Array<Array<string>> or null
+      pasteMode: false,
+      pasteSkipBlanks: false,
+      pasteHover: null,       // {r,c} for current hover when in paste mode
+      pastePreviewCells: new Set(),
     };
 
     const gridEl = document.getElementById('grid');
@@ -526,6 +562,7 @@ const state = {
       const mat = getMatrix(state.activeTab, state.activeZ);
       gridEl.innerHTML = '';
       clearShapePreview();
+      clearPastePreview();
       for (let r = 0; r < mat.length; r++) {
         const row = document.createElement('tr');
         for (let c = 0; c < mat[0].length; c++) {
@@ -548,6 +585,10 @@ const state = {
       // After rendering the active grid, try to show a faded preview of the next grid (if space allows)
       maybeRenderPreview();
       renderAxesOverlay();
+      // re-apply selection overlay after render
+      applySelectionOverlayFromRect();
+      // re-apply paste preview if we have a hover anchor
+      applyPastePreviewFromHover();
   }
 
     // Zoom handling (shared across all tabs)
@@ -570,6 +611,35 @@ const state = {
 
     function onCellDown(e, r, c) {
       e.preventDefault();
+      // Paste mode: paste buffer at clicked origin
+      if (state.pasteMode && state.copyBuffer && e.button === 0) {
+        pasteBufferAt(r, c);
+        return;
+      }
+      if (state.pasteMode && e.button === 2) { // right-click cancels paste mode
+        state.pasteMode = false;
+        clearPastePreview();
+        updateSelectionButtons();
+        return;
+      }
+      // Selection mode: right-click exits selection mode entirely
+      if (state.selectionMode && e.button === 2) {
+        state.selectionMode = false;
+        state.selecting = false;
+        state.selStart = null;
+        state.selectionRect = null;
+        clearSelectionOverlay();
+        updateSelectionButtons();
+        return;
+      }
+      // Selection mode: start selecting rectangle, not painting
+      if (state.selectionMode) {
+        state.selecting = true;
+        state.selStart = { r, c };
+        setSelectionOverlay([[r,c]]);
+        document.addEventListener('mouseup', onSelectMouseUpOnce, { once: true });
+        return;
+      }
       const shape = state.selectedShape || 'free';
       const tool = composeTokenForPaint(state.activeTab);
       const val = (e.button === 2) ? '' : tool; // right-click = erase
@@ -596,9 +666,23 @@ const state = {
       document.addEventListener('mouseup', onMouseUpOnce, { once: true });
     }
     function onCellEnter(e, r, c) {
+      // paste hover preview
+      if (state.pasteMode && state.copyBuffer) {
+        // Use the full-value/color paste preview, not just footprint
+        state.pasteHover = { r, c };
+        applyPastePreviewFromHover();
+        return;
+      }
       // freehand paint while dragging
       if (state.painting && state.selectedShape === 'free') {
         applyBrushAt(r, c, state.lastPaintVal);
+        return;
+      }
+      // selection drag preview
+      if (state.selectionMode && state.selecting && state.selStart) {
+        const { r: r0, c: c0 } = state.selStart;
+        const cells = rectCells(r0, c0, r, c, false, 1);
+        setSelectionOverlay(cells);
         return;
       }
       // live shape preview
@@ -638,6 +722,182 @@ const state = {
       state.shaping = false;
       state.shapeStart = null;
       state.shapeLast = null;
+    }
+
+    function onSelectMouseUpOnce() {
+      state.selecting = false;
+      // finalize selection rect from current overlay
+      const coords = Array.from(state.selectionCells).map(k => k.split(',').map(Number));
+      if (!coords.length) { state.selectionRect = null; updateSelectionButtons(); return; }
+      let r0 = Infinity, c0 = Infinity, r1 = -1, c1 = -1;
+      for (const [r,c] of coords) { r0 = Math.min(r0,r); c0 = Math.min(c0,c); r1 = Math.max(r1,r); c1 = Math.max(c1,c); }
+      state.selectionRect = { r0, c0, r1, c1, tab: state.activeTab, z: state.activeZ };
+      updateSelectionButtons();
+    }
+
+    // ===== Selection overlay helpers =====
+    function clearSelectionOverlay() {
+      if (!state.selectionCells) state.selectionCells = new Set();
+      state.selectionCells.forEach(k => {
+        const [rStr,cStr] = k.split(',');
+        const tr = gridEl.rows[+rStr]; if (!tr) return;
+        const td = tr.cells[+cStr]; if (!td) return;
+        td.classList.remove('selected');
+      });
+      state.selectionCells.clear();
+    }
+    function setSelectionOverlay(cells) {
+      const next = new Set(cells.map(([r,c]) => rcKey(r,c)));
+      state.selectionCells.forEach(k => { if (!next.has(k)) {
+        const [rStr,cStr] = k.split(',');
+        const tr = gridEl.rows[+rStr]; if (!tr) return;
+        const td = tr.cells[+cStr]; if (td) td.classList.remove('selected');
+      }});
+      next.forEach(k => { if (!state.selectionCells.has(k)) {
+        const [rStr,cStr] = k.split(',');
+        const tr = gridEl.rows[+rStr]; if (!tr) return;
+        const td = tr.cells[+cStr]; if (td) td.classList.add('selected');
+      }});
+      state.selectionCells = next;
+    }
+    function applySelectionOverlayFromRect() {
+      clearSelectionOverlay();
+      const rect = state.selectionRect;
+      if (!rect) return;
+      if (rect.tab !== state.activeTab || rect.z !== state.activeZ) return;
+      const cells = rectCells(rect.r0, rect.c0, rect.r1, rect.c1, false, 1);
+      setSelectionOverlay(cells);
+    }
+    function updateSelectionButtons() {
+      const copyBtn = document.getElementById('copy-selection');
+      const cutBtn = document.getElementById('cut-selection');
+      const clearBtn = document.getElementById('clear-selection');
+      const pasteBtn = document.getElementById('paste-selection');
+      const skipCb = document.getElementById('paste-skip-blanks');
+      const has = !!state.selectionRect;
+      if (copyBtn) copyBtn.disabled = !has;
+      if (cutBtn) cutBtn.disabled = !has;
+      if (clearBtn) clearBtn.disabled = !has;
+      if (pasteBtn) {
+        pasteBtn.disabled = !state.copyBuffer;
+        pasteBtn.classList.toggle('active', !!state.pasteMode);
+      }
+      if (skipCb) {
+        skipCb.disabled = !state.copyBuffer;
+        skipCb.checked = !!state.pasteSkipBlanks;
+      }
+      const toggle = document.getElementById('select-toggle');
+      if (toggle) toggle.classList.toggle('active', !!state.selectionMode);
+      if (gridContainerEl) {
+        gridContainerEl.classList.toggle('select-mode', !!state.selectionMode);
+        gridContainerEl.classList.toggle('paste-mode', !!state.pasteMode);
+      }
+    }
+    function clearSelection() {
+      state.selectionRect = null;
+      clearSelectionOverlay();
+      updateSelectionButtons();
+    }
+    function copySelectedArea() {
+      const rect = state.selectionRect;
+      if (!rect) return;
+      const mat = getMatrix(rect.tab, rect.z);
+      const r0 = Math.max(0, Math.min(rect.r0, rect.r1));
+      const r1 = Math.min(mat.length-1, Math.max(rect.r0, rect.r1));
+      const c0 = Math.max(0, Math.min(rect.c0, rect.c1));
+      const c1 = Math.min(mat[0].length-1, Math.max(rect.c0, rect.c1));
+      const sub = [];
+      for (let r=r0; r<=r1; r++) {
+        const row = [];
+        for (let c=c0; c<=c1; c++) row.push(mat[r][c] ?? '');
+        sub.push(row);
+      }
+      const lines = matrixRowsToCSVLines(sub);
+      copyToClipboard(lines.join('\n'));
+      state.copyBuffer = sub;
+      // remove active selection after copy and exit selection mode
+      clearSelection();
+      state.selectionMode = false;
+      state.selecting = false;
+      state.selStart = null;
+      // enable paste button
+      updateSelectionButtons();
+    }
+
+    function cutSelectedArea() {
+      const rect = state.selectionRect;
+      if (!rect) return;
+      const mat = getMatrix(rect.tab, rect.z);
+      const r0 = Math.max(0, Math.min(rect.r0, rect.r1));
+      const r1 = Math.min(mat.length-1, Math.max(rect.r0, rect.r1));
+      const c0 = Math.max(0, Math.min(rect.c0, rect.c1));
+      const c1 = Math.min(mat[0].length-1, Math.max(rect.c0, rect.c1));
+      // build submatrix for clipboard
+      const sub = [];
+      for (let r=r0; r<=r1; r++) {
+        const row = [];
+        for (let c=c0; c<=c1; c++) row.push(mat[r][c] ?? '');
+        sub.push(row);
+      }
+      const lines = matrixRowsToCSVLines(sub);
+      copyToClipboard(lines.join('\n'));
+      state.copyBuffer = sub;
+      // clear the selected area
+      for (let r=r0; r<=r1; r++) {
+        for (let c=c0; c<=c1; c++) {
+          mat[r][c] = '';
+          // update DOM only if we are viewing the same tab/z
+          if (state.activeTab === rect.tab && state.activeZ === rect.z) {
+            const tr = gridEl.rows[r];
+            if (tr) {
+              const td = tr.cells[c];
+              if (td) {
+                td.textContent = '';
+                styleCell(td, '', state.activeTab);
+                if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
+              }
+            }
+          }
+        }
+      }
+      maybeRenderPreview();
+      // clear selection overlay and exit modes
+      clearSelection();
+      state.selectionMode = false;
+      state.selecting = false;
+      state.selStart = null;
+      updateSelectionButtons();
+    }
+
+    function pasteBufferAt(r, c) {
+      if (!state.copyBuffer) return;
+      const mat = getMatrix(state.activeTab, state.activeZ);
+      const R = mat.length, C = mat[0].length;
+      const h = state.copyBuffer.length;
+      const w = state.copyBuffer[0]?.length || 0;
+      for (let dr=0; dr<h; dr++) {
+        for (let dc=0; dc<w; dc++) {
+          const rr = r + dr, cc = c + dc;
+          if (rr<0 || cc<0 || rr>=R || cc>=C) continue;
+          const v = state.copyBuffer[dr][dc] ?? '';
+          if (state.pasteSkipBlanks && (v === '' || v == null)) continue;
+          // Direct set (no mirroring)
+          mat[rr][cc] = v;
+          const tr = gridEl.rows[rr];
+          if (tr) {
+            const td = tr.cells[cc];
+            if (td) {
+              td.textContent = displayTokenForGrid(v, state.activeTab);
+              styleCell(td, v, state.activeTab);
+              if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, rr, cc);
+            }
+          }
+        }
+      }
+      maybeRenderPreview();
+      // keep paste mode active after placement; refresh preview at current hover
+      applyPastePreviewFromHover();
+      updateSelectionButtons();
     }
 
     function applyTool(r, c, val) {
@@ -737,6 +997,103 @@ const state = {
         const td = tr.cells[+cStr]; if (td) td.classList.add('shape-preview');
       }});
       state.previewCells = next;
+    }
+    // Paste hover preview helpers
+    function clearPastePreview() {
+      if (!state.pastePreviewCells) state.pastePreviewCells = new Set();
+      state.pastePreviewCells.forEach(k => {
+        const [rStr,cStr] = k.split(',');
+        const tr = gridEl.rows[+rStr]; if (!tr) return;
+        const td = tr.cells[+cStr]; if (!td) return;
+        td.classList.remove('paste-preview');
+        const ghost = td.querySelector('.paste-ghost'); if (ghost) ghost.remove();
+      });
+      state.pastePreviewCells.clear();
+    }
+    function setPastePreview(cells) {
+      // cells can be [[r,c]] or [[r,c,color,val]]
+      const next = new Set(cells.map(([r,c]) => rcKey(r,c)));
+      state.pastePreviewCells.forEach(k => { if (!next.has(k)) {
+        const [rStr,cStr] = k.split(',');
+        const tr = gridEl.rows[+rStr]; if (!tr) return;
+        const td = tr.cells[+cStr]; if (td) {
+          td.classList.remove('paste-preview');
+          const ghost = td.querySelector('.paste-ghost'); if (ghost) ghost.remove();
+        }
+      }});
+      cells.forEach(item => {
+        const r = item[0], c = item[1];
+        const k = rcKey(r,c);
+        const tr = gridEl.rows[r]; if (!tr) return;
+        const td = tr.cells[c]; if (!td) return;
+        td.classList.add('paste-preview');
+        // Build or update ghost element
+        let ghost = td.querySelector('.paste-ghost');
+        if (!ghost) { ghost = document.createElement('div'); ghost.className = 'paste-ghost'; td.appendChild(ghost); }
+        const bgHex = item[2] || '#666666';
+        const val = item[3] ?? '';
+        ghost.style.background = bgHex;
+        ghost.textContent = displayTokenForGrid(val, state.activeTab);
+        // choose readable text color based on bg
+        const lum = luminanceOfHex(bgHex);
+        ghost.style.color = lum > 0.6 ? '#111' : '#fff';
+        state.pastePreviewCells.add(k);
+      });
+      state.pastePreviewCells = next;
+    }
+    function pasteFootprintCells(r, c) {
+      const mat = getMatrix(state.activeTab, state.activeZ);
+      const R = mat.length, C = mat[0].length;
+      const h = state.copyBuffer?.length || 0;
+      const w = state.copyBuffer?.[0]?.length || 0;
+      const cells = [];
+      for (let dr=0; dr<h; dr++) {
+        for (let dc=0; dc<w; dc++) {
+          const rr = r + dr, cc = c + dc;
+          if (rr<0 || cc<0 || rr>=R || cc>=C) continue;
+          cells.push([rr, cc]);
+        }
+      }
+      return cells;
+    }
+    function rgbaFromHex(hex, alpha) {
+      const {r,g,b} = hexToRgb(hex);
+      return `rgba(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)},${alpha})`;
+    }
+    function baseColorForToken(scopeId, token) {
+      const s = String(token || '');
+      if (!s) return null;
+      if (scopeId === 'dig') return getDigColorForToken(s);
+      if (scopeId === 'place') return getPlaceColorForToken(s);
+      if (scopeId === 'zone') return getZoneColorForToken(s);
+      if (scopeId === 'burrow') return getBurrowColorForToken(s) || '#577590';
+      if (scopeId === 'build') {
+        const base = stripPropsAndCfg(s);
+        return getBuildColorForToken(base);
+      }
+      if (scopeId === 'query') return '#ff9500';
+      return null;
+    }
+    function applyPastePreviewFromHover() {
+      if (!state.pasteMode || !state.copyBuffer || !state.pasteHover) return;
+      const { r, c } = state.pasteHover;
+      clearPastePreview();
+      const h = state.copyBuffer.length;
+      const w = state.copyBuffer[0]?.length || 0;
+      const triples = [];
+      for (let dr=0; dr<h; dr++) {
+        for (let dc=0; dc<w; dc++) {
+          const rr = r + dr, cc = c + dc;
+          const mat = getMatrix(state.activeTab, state.activeZ);
+          if (rr<0 || cc<0 || rr>=mat.length || cc>=mat[0].length) continue;
+          const v = state.copyBuffer[dr][dc] ?? '';
+          // Always skip blank tokens in preview; show only copied tiles
+          if (!String(v)) continue;
+          const baseHex = baseColorForToken(state.activeTab, v) || '#666666';
+          triples.push([rr, cc, baseHex, v]);
+        }
+      }
+      setPastePreview(triples);
     }
     function clampToGrid(r,c){
       const mat = getMatrix(state.activeTab, state.activeZ);
@@ -1607,6 +1964,63 @@ const state = {
       renderGrid();
     });
 
+    // Selection controls wiring
+    const selectToggle = document.getElementById('select-toggle');
+    if (selectToggle) {
+      selectToggle.addEventListener('click', () => {
+        state.selectionMode = !state.selectionMode;
+        if (state.selectionMode) {
+          // entering selection mode cancels painting/shaping preview
+          state.painting = false;
+          state.shaping = false;
+          clearShapePreview();
+          // disable paste mode while selecting
+          state.pasteMode = false;
+          clearPastePreview();
+        }
+        updateSelectionButtons();
+      });
+    }
+    const copySelBtn = document.getElementById('copy-selection');
+    copySelBtn?.addEventListener('click', () => copySelectedArea());
+    const cutSelBtn = document.getElementById('cut-selection');
+    cutSelBtn?.addEventListener('click', () => cutSelectedArea());
+    const clearSelBtn = document.getElementById('clear-selection');
+    clearSelBtn?.addEventListener('click', () => clearSelection());
+    const pasteSelBtn = document.getElementById('paste-selection');
+    pasteSelBtn?.addEventListener('click', () => {
+      if (!state.copyBuffer) return;
+      state.pasteMode = !state.pasteMode;
+      if (state.pasteMode) {
+        state.selectionMode = false;
+      } else { clearPastePreview(); }
+      updateSelectionButtons();
+    });
+    const pasteSkipCb = document.getElementById('paste-skip-blanks');
+    pasteSkipCb?.addEventListener('change', () => {
+      state.pasteSkipBlanks = !!pasteSkipCb.checked;
+      if (state.pasteMode) applyPastePreviewFromHover();
+    });
+    // Keyboard shortcuts: Esc clears selection, Ctrl/Cmd+C copies selection if present
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (state.pasteMode) { state.pasteMode = false; clearPastePreview(); updateSelectionButtons(); return; }
+        clearSelection();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+        if (state.selectionRect) { e.preventDefault(); copySelectedArea(); }
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+        if (state.copyBuffer) {
+          e.preventDefault();
+          state.pasteMode = !state.pasteMode;
+          if (!state.pasteMode) clearPastePreview(); else state.selectionMode = false;
+          updateSelectionButtons();
+        }
+      }
+    });
+
     // (Header project save/load removed to match the copy file.)
 
     // Wire statusbar actions
@@ -1756,417 +2170,3 @@ const state = {
 
     const ZONE_TYPES = [
       ['','Eraser'],
-      ['m','meeting'], ['b','bedroom'], ['h','dining'], ['n','pen/pasture'], ['p','pit/pond'], ['w','water source'], ['j','dungeon'], ['f','fishing'], ['s','sand'], ['o','office'], ['D','dormitory'], ['B','barracks'], ['a','archery'], ['d','garbage'], ['t','animal training'], ['T','tomb'], ['g','gather/pick fruit'], ['c','clay']
-    ];
-    const BURROW_TYPES = [ ['','Eraser'], ['a','add'], ['e','erase'] ];
-
-    // Build catalog (grouped)
-    const BUILD_GROUPS = [
-      { name: 'Furniture', items: [
-        ['a','armor stand'], ['b','bed'], ['c','seat'], ['n','burial receptacle'], ['d','door'], ['x','floodgate'], ['H','floor hatch'], ['W','wall grate'], ['G','floor grate'], ['B','vertical bars'], ['~b','floor bars'], ['f','cabinet'], ['h','container'], ['r','weapon rack'], ['~c','bookcase'], ['F','display furniture'], ['I','buildable instrument'],
-        ['s','statue'], ['t','table'], ['l','well'], ['y','glass window'], ['Y','gem window'], ['A','archery target'], ['m','animal trap'], ['v','restraint'], ['j','cage'], ['N','nest box'], ['~h','hive'], ['a','offering place']
-      ]},
-      { name: 'Roads & Plots', items: [ ['p','farm plot'], ['o','paved road'], ['O','dirt road'], ['k','vermin catcher'] ] },
-      { name: 'Workshops', items: [ ['we','leather works'], ['wq','quern'], ['wM','millstone'], ['wo','loom'], ['wk','clothier'], ['wb','bowyer'], ['wc','carpenter'], ['wf','metalsmith'], ['wv','magma forge'], ['wj','jeweler'], ['wm','stoneworker'], ['wu','butcher'], ['wn','tanner'], ['wr','craftsdwarf'], ['ws','siege workshop'], ['wt','mechanic'], ['wl','still'], ['ww','farmer'], ['wz','kitchen'], ['wh','fishery'], ['wy','ashery'], ['wd','dyer'], ['wS','soap maker'], ['wp','screw press'] ]},
-      { name: 'Furnaces', items: [ ['ew','wood furnace'], ['es','smelter'], ['el','magma smelter'], ['eg','glass furnace'], ['ea','magma glass furnace'], ['ek','kiln'], ['en','magma kiln'] ] },
-      { name: 'Siege Engines', items: [ ['ib','ballista'], ['it','bolt thrower'], ['ic','catapult'] ] },
-      { name: 'Constructions', items: [ ['Cw','wall'], ['CW','reinforced wall'], ['Cf','floor'], ['Cr','ramp'], ['Cu','up stair'], ['Cd','down stair'], ['Cx','up/down stair'], ['CF','fortification'], ['S','support'], ['D','trade depot'], ['g','bridge (retracting)'], ['gw','bridge (raise west)'], ['gd','bridge (raise south)'], ['gx','bridge (raise east)'], ['ga','bridge (raise north)'] ] },
-      { name: 'Track Stops', items: [ ['trackstop','track stop'], ['trackstopN','track stop N'], ['trackstopS','track stop S'], ['trackstopE','track stop E'], ['trackstopW','track stop W'] ] },
-      { name: 'Traps & Levers', items: [ ['Ts','stone-fall trap'], ['Tw','weapon trap'], ['Tl','lever'], ['Tp','pressure plate'], ['Tc','cage trap'], ['TS','upright spear/spike'] ] },
-      { name: 'Constructed Tracks', items: [ ['trackN','track N'], ['trackS','track S'], ['trackE','track E'], ['trackW','track W'], ['trackNS','track NS'], ['trackEW','track EW'], ['trackNE','track NE'], ['trackNW','track NW'], ['trackSE','track SE'], ['trackSW','track SW'], ['trackNSE','track NSE'], ['trackNSW','track NSW'], ['trackNEW','track NEW'], ['trackSEW','track SEW'], ['trackNSEW','track NSEW'], ['trackrampN','ramp N'], ['trackrampS','ramp S'], ['trackrampE','ramp E'], ['trackrampW','ramp W'], ['trackrampNS','ramp NS'], ['trackrampEW','ramp EW'], ['trackrampNE','ramp NE'], ['trackrampNW','ramp NW'], ['trackrampSE','ramp SE'], ['trackrampSW','ramp SW'], ['trackrampNSE','ramp NSE'], ['trackrampNSW','ramp NSW'], ['trackrampNEW','ramp NEW'], ['trackrampSEW','ramp SEW'], ['trackrampNSEW','ramp NSEW'] ] }
-      ,{ name: 'Mechanical Power', items: [
-        ['Msu','screw pump (from south)'], ['Msk','screw pump (from north)'], ['Msm','screw pump (from east)'], ['Msh','screw pump (from west)'],
-        ['Mw','water wheel (vertical)'], ['Mws','water wheel (horizontal)'], ['Mg','gear assembly'],
-        ['Mh','axle (horizontal E-W)'], ['Mhs','axle (horizontal N-S)'], ['Mv','axle (vertical)'],
-        ['rollerNS','roller pushing south'], ['rollerEW','roller pushing west'], ['rollerSN','roller pushing north'], ['rollerWE','roller pushing east']
-      ]}
-    ];
-
-    function buildToolButton(val, label) {
-      const d = document.createElement('div');
-      d.className = 'tool';
-      d.setAttribute('data-tool', val);
-      d.innerHTML = `${label||val}<small>${val}</small>`;
-      return d;
-    }
-
-    function buildColoredToolButton(val, label, color) {
-      const d = document.createElement('div');
-      d.className = 'tool';
-      d.setAttribute('data-tool', val);
-      const title = document.createElement('div');
-      title.textContent = label || val;
-      const small = document.createElement('small');
-      small.className = 'token-pill';
-      // Show display glyphs (e.g., arrows for tracks) in the pill
-      small.textContent = displayTokenForGrid(val, 'dig') || ' ';
-      if (color) { small.style.background = color; ensureReadableText(small, color); }
-      d.appendChild(title);
-      d.appendChild(small);
-      return d;
-    }
-
-    function buildColoredBuildToolButton(val, label) {
-      const d = document.createElement('div');
-      d.className = 'tool';
-      d.setAttribute('data-tool', val);
-      const title = document.createElement('div');
-      title.textContent = label || val;
-      const small = document.createElement('small');
-      small.className = 'token-pill';
-      // Show display glyphs (e.g., arrows for tracks) in the pill
-      small.textContent = displayTokenForGrid(val, 'build');
-      const base = stripPropsAndCfg(val);
-      const col = getBuildColorForToken(base);
-      if (col) {
-        small.style.background = col;
-        ensureReadableText(small, col);
-      }
-      d.appendChild(title);
-      d.appendChild(small);
-      return d;
-    }
-
-    function renderToolCatalogs() {
-      // Dig: basic
-      const digBasic = document.getElementById('dig-basic');
-      DIG_BASIC.forEach(([v,l]) => {
-        const base = stripPropsAndCfg(v);
-        const col = getDigColorForToken(base);
-        digBasic.appendChild(buildColoredToolButton(v,l,col));
-      });
-      // Dig: flags
-      const digFlags = document.getElementById('dig-flags');
-      DIG_FLAGS.forEach(([v,l]) => {
-        const base = stripPropsAndCfg(v);
-        const col = getDigColorForToken(base);
-        digFlags.appendChild(buildColoredToolButton(v,l,col));
-      });
-      // Dig: tracks
-      const digTracks = document.getElementById('dig-tracks');
-      DIG_TRACKS.forEach(v => {
-        const base = stripPropsAndCfg(v);
-        const col = getDigColorForToken(base);
-        digTracks.appendChild(buildColoredToolButton(v, v, col));
-      });
-
-      // Place: stockpiles
-      const place = document.getElementById('place-stockpiles');
-      PLACE_STOCKPILES.forEach(([v,l]) => {
-        const base = stripPropsAndCfg(v);
-        const col = getPlaceColorForToken(base);
-        place.appendChild(buildColoredToolButton(v,l,col));
-      });
-
-      // Place: multi-type builder checkboxes
-      const placeMulti = document.getElementById('place-multi-checks');
-      if (placeMulti) {
-        PLACE_STOCKPILES.forEach(([v, label]) => {
-          if (!v) return; // skip eraser
-          const wrap = document.createElement('label');
-          wrap.className = 'tool';
-          const cb = document.createElement('input');
-          cb.type = 'checkbox';
-          cb.value = v;
-          const span = document.createElement('span');
-          span.textContent = label;
-          wrap.appendChild(cb);
-          wrap.appendChild(span);
-          placeMulti.appendChild(wrap);
-        });
-        const placeMultiApply = document.getElementById('place-multi-apply');
-        if (placeMultiApply) {
-          placeMultiApply.addEventListener('click', () => {
-            const checks = document.querySelectorAll('#place-multi-checks input[type=checkbox]');
-            const parts = [];
-            checks.forEach(cb => { if (cb.checked) parts.push(cb.value); });
-            const combo = parts.join('');
-            if (!combo) return;
-            state.selectedToolByTab['place'] = combo;
-            if (typeof updateToolUI === 'function') updateToolUI();
-          });
-        }
-      }
-
-      // Zone
-      const zones = document.getElementById('zone-types');
-      ZONE_TYPES.forEach(([v,l]) => {
-        const base = stripPropsAndCfg(v);
-        const col = getZoneColorForToken(base);
-        zones.appendChild(buildColoredToolButton(v,l,col));
-      });
-
-      // Burrow
-      const burrow = document.getElementById('burrow-types');
-      BURROW_TYPES.forEach(([v,l]) => {
-        const base = stripPropsAndCfg(v);
-        const col = getBurrowColorForToken(base);
-        burrow.appendChild(buildColoredToolButton(v,l,col));
-      });
-
-      // Build groups
-      const groupsEl = document.getElementById('build-groups');
-      groupsEl.innerHTML = '';
-      BUILD_GROUPS.forEach((group, gi) => {
-        const sec = document.createElement('div');
-        sec.className = 'section';
-        const h = document.createElement('h3'); h.textContent = group.name; sec.appendChild(h);
-        const grid = document.createElement('div'); grid.className = 'tool-grid';
-        group.items.forEach(([v,l]) => grid.appendChild(buildColoredBuildToolButton(v,l)));
-        sec.appendChild(grid);
-        groupsEl.appendChild(sec);
-      });
-    }
-
-    // Property builders for place/zone/burrow
-    function buildPlaceProps() {
-      const props = [];
-      const name = document.getElementById('place-name')?.value?.trim();
-      if (name) props.push(`name=${JSON.stringify(name)}`);
-      const takeFrom = document.getElementById('place-take-from')?.value?.trim();
-      if (takeFrom) props.push(`take_from=${JSON.stringify(takeFrom)}`);
-      const giveTo = document.getElementById('place-give-to')?.value?.trim();
-      if (giveTo) props.push(`give_to=${JSON.stringify(giveTo)}`);
-      const barrels = document.getElementById('place-barrels')?.value;
-      if (barrels !== '' && barrels != null) props.push(`barrels=${Number(barrels)}`);
-      const bins = document.getElementById('place-bins')?.value;
-      if (bins !== '' && bins != null) props.push(`bins=${Number(bins)}`);
-      const wheelbarrows = document.getElementById('place-wheelbarrows')?.value;
-      if (wheelbarrows !== '' && wheelbarrows != null) props.push(`wheelbarrows=${Number(wheelbarrows)}`);
-      const containers = document.getElementById('place-containers')?.value;
-      if (containers !== '' && containers != null) props.push(`containers=${Number(containers)}`);
-      if (document.getElementById('place-links-only')?.checked) props.push('links_only=true');
-      if (document.getElementById('place-quantum')?.checked) props.push('quantum=true');
-      if (document.getElementById('place-automelt')?.checked) props.push('automelt=true');
-      if (document.getElementById('place-autotrade')?.checked) props.push('autotrade=true');
-      if (document.getElementById('place-autodump')?.checked) props.push('autodump=true');
-      if (document.getElementById('place-autotrain')?.checked) props.push('autotrain=true');
-      const extra = document.getElementById('place-props')?.value?.trim();
-      if (extra) props.push(extra);
-      if (!props.length) return '';
-      return `{${props.join(' ')}}`;
-    }
-
-    function buildPlaceConfigSuffix() {
-      const cfg = document.getElementById('place-config')?.value?.trim();
-      if (!cfg) return '';
-      return `:=${cfg}`;
-    }
-
-    function buildPlaceExtentSuffix() {
-      const raw = document.getElementById('place-extent')?.value?.trim();
-      if (!raw) return '';
-      const m = raw.match(/^\(?\s*(\d+)\s*x\s*(\d+)\s*\)?$/i);
-      if (!m) return '';
-      const w = m[1];
-      const h = m[2];
-      return `(${w}x${h})`;
-    }
-
-    function buildZoneProps() {
-      const props = [];
-      const name = document.getElementById('zone-name')?.value?.trim();
-      if (name) props.push(`name=${JSON.stringify(name)}`);
-      const locType = document.getElementById('zone-location')?.value;
-      const locName = document.getElementById('zone-location-name')?.value?.trim();
-      if (locType) {
-        const loc = locName ? `${locType}/${locName}` : locType;
-        props.push(`location=${loc}`);
-      }
-      const prof = document.getElementById('zone-profession')?.value?.trim();
-      if (prof) props.push(`profession=${prof}`);
-      const extra = document.getElementById('zone-props')?.value?.trim();
-      if (extra) props.push(extra);
-      if (!props.length) return '';
-      return `{${props.join(' ')}}`;
-    }
-
-    function buildBurrowProps() {
-      const props = [];
-      const name = document.getElementById('burrow-name')?.value?.trim();
-      if (name) props.push(`name=${JSON.stringify(name)}`);
-      if (document.getElementById('burrow-create')?.checked) props.push('create=true');
-      const civalert = document.getElementById('burrow-civalert')?.value?.trim();
-      if (civalert) props.push(`civalert=${JSON.stringify(civalert)}`);
-      const extra = document.getElementById('burrow-props')?.value?.trim();
-      if (extra) props.push(extra);
-      if (!props.length) return '';
-      return `{${props.join(' ')}}`;
-    }
-
-    function composeTokenForPaint(scopeId) {
-      let token = state.selectedToolByTab[scopeId] || '';
-      if (!token) return '';
-      // dig markers
-      if (scopeId === 'dig') {
-        const parts = [];
-        if (document.getElementById('dig-mb').checked) parts.push('mb');
-        if (document.getElementById('dig-mw').checked) parts.push('mw');
-        if (document.getElementById('dig-md').checked) parts.push('md');
-        token = parts.join('') + token;
-        const pr = document.getElementById('dig-priority')?.value || '';
-        if (pr && !/[1-7]$/.test(token)) token = token + pr;
-      }
-      if (scopeId === 'place') {
-        const props = buildPlaceProps();
-        const cfg = buildPlaceConfigSuffix();
-        const ext = buildPlaceExtentSuffix();
-        if (props) token += props;
-        if (cfg) token += cfg;
-        if (ext) token += ext; // append extent at the very end
-        return token;
-      }
-      if (scopeId === 'zone') {
-        const props = buildZoneProps();
-        if (props) token += props;
-        return token;
-      }
-      if (scopeId === 'burrow') {
-        const props = buildBurrowProps();
-        if (props) token += props;
-        return token;
-      }
-      return token;
-    }
-
-    // Wire dig marker toggles to update label preview if tool is set
-    function wireDigMarkers() {
-      ['dig-mb','dig-mw','dig-md','dig-priority'].forEach(id => {
-        document.getElementById(id).addEventListener('change', updateToolUI);
-      });
-    }
-
-    // Wire property inputs to refresh preview
-    function wirePropInputs() {
-      const ids = [
-        'place-name','place-take-from','place-give-to','place-barrels','place-bins','place-wheelbarrows','place-containers',
-        'place-links-only','place-quantum','place-automelt','place-autotrade','place-autodump','place-autotrain','place-config','place-extent','place-props',
-        'zone-name','zone-location','zone-location-name','zone-profession','zone-props',
-        'burrow-name','burrow-create','burrow-civalert','burrow-props'
-      ];
-      ids.forEach(id => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        const ev = (el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'number')) ? 'input' : 'change';
-        el.addEventListener(ev, updateToolUI);
-      });
-    }
-
-    function wireBuildSearch() {
-      const input = document.getElementById('build-search');
-      input.addEventListener('input', () => {
-        const q = input.value.trim().toLowerCase();
-        document.querySelectorAll('#build-groups .tool').forEach(btn => {
-          const val = (btn.getAttribute('data-tool')||'').toLowerCase();
-          const text = btn.textContent.toLowerCase();
-          const show = !q || val.includes(q) || text.includes(q);
-          btn.style.display = show ? '' : 'none';
-        });
-      });
-    }
-
-    
-
-    function init() {
-      document.getElementById('cols').value = defaultCols;
-      document.getElementById('rows').value = defaultRows;
-      // sync brush input to state and validate
-      const brushInput = document.getElementById('brush-size');
-      if (brushInput) {
-        brushInput.addEventListener('input', () => {
-          const n = parseInt(brushInput.value || '1', 10);
-          let v = isNaN(n) ? 1 : Math.max(1, Math.min(25, n));
-          state.brushSize = v;
-        });
-        const bInc = document.getElementById('brush-inc');
-        const bDec = document.getElementById('brush-dec');
-        bInc?.addEventListener('click', () => {
-          const next = Math.min(25, (getBrushSize() || 1) + 1);
-          state.brushSize = next;
-          brushInput.value = String(next);
-        });
-        bDec?.addEventListener('click', () => {
-          const next = Math.max(1, (getBrushSize() || 1) - 1);
-          state.brushSize = next;
-          brushInput.value = String(next);
-        });
-      }
-      ensureGrids();
-      renderTabs();
-      setActiveTab('dig');
-      renderToolCatalogs();
-      wireTools();
-      wireBuildSearch();
-      wireDigMarkers();
-      wirePropInputs();
-      updateToolUI();
-      applyZoom();
-      // shape controls
-      const shapeSel = document.getElementById('shape-select');
-      const shapeOutlineWrap = document.getElementById('shape-outline-wrap');
-      const shapeOutline = document.getElementById('shape-outline');
-      if (shapeSel) {
-        shapeSel.value = state.selectedShape;
-        const refreshOutlineVisibility = () => {
-          const v = shapeSel.value;
-          // Outline applies to rectangles and circles
-          if (shapeOutlineWrap) shapeOutlineWrap.style.display = (v === 'rect' || v === 'circle') ? '' : 'none';
-        };
-        refreshOutlineVisibility();
-        shapeSel.addEventListener('change', () => {
-          state.selectedShape = shapeSel.value;
-          refreshOutlineVisibility();
-          // clear any stale preview if switching modes mid-drag
-          clearShapePreview();
-          state.shaping = false;
-          state.shapeStart = null;
-          state.shapeLast = null;
-        });
-      }
-      if (shapeOutline) {
-        shapeOutline.checked = !!state.shapeOutline;
-        shapeOutline.addEventListener('change', () => {
-          state.shapeOutline = !!shapeOutline.checked;
-        });
-      }
-      // Default tool per tab
-      state.selectedToolByTab['dig'] = 'd';
-      updateToolUI();
-      // Re-evaluate preview on window resize
-      window.addEventListener('resize', () => { maybeRenderPreview(); });
-      const prevToggle = document.getElementById('preview-toggle');
-      if (prevToggle) {
-        state.previewEnabled = !!prevToggle.checked;
-        prevToggle.addEventListener('change', () => {
-          state.previewEnabled = !!prevToggle.checked;
-          maybeRenderPreview();
-        });
-      }
-      // Mirror toggles
-      const mvToggle = document.getElementById('mirror-v-toggle');
-      const mhToggle = document.getElementById('mirror-h-toggle');
-      if (mvToggle) {
-        state.mirrorVEnabled = !!mvToggle.checked;
-        mvToggle.addEventListener('change', () => {
-          state.mirrorVEnabled = !!mvToggle.checked;
-          renderAxesOverlay();
-        });
-      }
-      if (mhToggle) {
-        state.mirrorHEnabled = !!mhToggle.checked;
-        mhToggle.addEventListener('change', () => {
-          state.mirrorHEnabled = !!mhToggle.checked;
-          renderAxesOverlay();
-        });
-      }
-      // Update axes overlay on resize as well
-      window.addEventListener('resize', () => { renderAxesOverlay(); });
-      // Initialize z-label and ensure first render uses active z
-      ensureGrids();
-      updateZLabel();
-      renderGrid();
-    }
-    init();
-  </script>
-</body>
-</html>
