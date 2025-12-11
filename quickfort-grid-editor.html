@@ -20,6 +20,19 @@
     input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     header button { padding: 8px 10px; background: var(--accent); color: #021018; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
     header button.secondary { background: var(--muted); color: var(--fg2); }
+    /* Make the help button prominent */
+    #help-btn {
+      background: var(--accent);
+      color: #06121a;
+      border: none;
+      font-weight: 800;
+      width: 32px; height: 32px; padding: 0;
+      border-radius: 999px;
+      display: inline-flex; align-items: center; justify-content: center;
+      box-shadow: 0 0 0 2px rgba(34,197,94,0.18);
+    }
+    #help-btn:hover { box-shadow: 0 0 0 3px rgba(34,197,94,0.28); transform: translateY(-0.5px); }
+    #help-btn:active { transform: translateY(0); }
     /* Visual toggle for header/status buttons in active mode */
     button.active { outline: 2px solid var(--accent); background: #13232d; color: var(--accent2); }
     main { display: grid; grid-template-columns: 280px 1fr; gap: 0; height: calc(100% - 54px); }
@@ -150,7 +163,7 @@
       </div>
       <label style="margin-left:8px;"><input id="preview-toggle" type="checkbox" /> Preview</label>
       <button id="cleargrid" class="secondary">Clear Current Grid</button>
-      <button id="help-btn" class="secondary" title="Usage help">?</button>
+      <button id="help-btn" class="secondary" title="Usage help" aria-label="Help">?</button>
       <div id="help-pop" class="popover hidden">
         <strong>Basics</strong><br>
         Left-click paints the active tool, right-click erases. Drag to paint across multiple cells.
@@ -2328,16 +2341,3 @@ const state = {
             const id = headerToTabId(s.header);
             if (!firstTab) firstTab = id;
             importSectionToMultiZ(id, s.matrix);
-          });
-          if (firstTab) setActiveTab(firstTab);
-          else renderGrid();
-        } catch (err) {
-          console.error('Failed to load CSV:', err);
-        } finally {
-          e.target.value = '';
-        }
-      };
-      reader.readAsText(f);
-    });
-
-    // Import a single sheet (matrix rows) into multi-z layers using #> / #< rows
