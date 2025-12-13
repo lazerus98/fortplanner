@@ -40,6 +40,14 @@
     .tools { padding: 12px; }
     .section { margin-bottom: 16px; }
     .section h3 { margin: 10px 0 8px; font-size: 13px; font-weight: 700; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.06em; }
+    /* Collapsible sections (tools sidebar categories) */
+    .section.collapsible > h3 { cursor: pointer; position: relative; padding-left: 16px; user-select: none; }
+    .section.collapsible > h3::before {
+      content: '▾';
+      position: absolute; left: 0; top: 0; bottom: 0; display: inline-flex; align-items: center; color: var(--fg2);
+    }
+    .section.collapsible.collapsed > h3::before { content: '▸'; }
+    .section.collapsible.collapsed > :not(h3) { display: none; }
     .tool-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 6px; }
     .tool { background: var(--cell); border: 1px solid var(--muted); padding: 8px; border-radius: 8px; cursor: pointer; font-size: 13px; text-align: center; color: var(--fg); }
     .tool small { display: block; color: var(--fg2); margin-top: 2px; font-size: 11px; }
@@ -155,13 +163,12 @@
         <button id="zoom-in" title="Zoom in (Ctrl+=)">+</button>
       </div>
       <div class="row" style="align-items:center; gap:6px; margin-left:6px;">
-        <span id="z-label" class="note" style="min-width:56px; display:inline-block; text-align:center;">Z1/1</span>
-        <button id="z-down" class="secondary" title="Down one z-level">Z-</button>
-        <button id="z-up" title="Up one z-level">Z+</button>
-        <button id="z-add" class="secondary" title="Add new z-level">Add Z</button>
-        <button id="z-del" class="secondary" title="Delete current z-level">Del Z</button>
+        <span id="z-label" class="note" style="min-width:56px; display:inline-block; text-align:center;">Z0</span>
+        <button id="z-down" class="secondary" title="Down one z-level">Z+</button>
+        <button id="z-up" title="Up one z-level">Z-</button>
       </div>
-      <label style="margin-left:8px;"><input id="preview-toggle" type="checkbox" /> Preview</label>
+      <button id="preview-toggle-btn" class="secondary" title="Toggle preview panels">Preview</button>
+      <button id="syntax-toggle" class="secondary" title="Toggle cell text: color-only vs full">Full Syntax</button>
       <button id="cleargrid" class="secondary">Clear Current Grid</button>
       <button id="help-btn" class="secondary" title="Usage help" aria-label="Help">?</button>
       <div id="help-pop" class="popover hidden">
@@ -178,8 +185,8 @@
         grid to move the mirror lines.<br><br>
 
         <strong>Z-levels & dig overlay</strong><br>
-        Z+ / Z− switch floors, Add Z / Del Z change how many layers exist. The "Preview"
-        checkbox shows the next Z-level as a faded overlay to help align towers, stair stacks,
+        Z+ / Z− switch floors. Scroll over the grid to move through Z-levels; scrolling past the current bounds creates a new level in that direction. The "Preview"
+        button shows the next Z-level as a faded overlay to help align towers, stair stacks,
         etc. Dig designations from the #dig tab are shown as a green overlay on the other tabs
         for alignment.<br><br>
 
@@ -489,6 +496,9 @@ const state = {
       currentAction: null,      // { tab, z, cells: Map<'r,c', {r,c,old,new}> }
       isUndoRedo: false,        // guard during undo/redo application
       historyCap: 50,           // max actions to keep per tab+z
+      zeroIndex: 0,             // display index of Z=0 (origin)
+      // display mode for cells
+      showFullSyntax: false,
     };
 
     const gridEl = document.getElementById('grid');
@@ -526,20 +536,34 @@ const state = {
       });
     }
 
+    function mapZ(z) {
+      // Map display index (0 = top) to internal storage index (end = top)
+      const n = Math.max(1, state.zCount|0);
+      const zz = Math.max(0, Math.min(n-1, z|0));
+      return (n - 1) - zz;
+    }
+
     function getMatrix(tabId = state.activeTab, z = state.activeZ) {
       ensureGrids();
-      return state.grids[tabId][z];
+      const zz = mapZ(z);
+      return state.grids[tabId][zz];
     }
 
     function setMatrix(tabId, z, matrix) {
       ensureGrids();
-      state.grids[tabId][z] = matrix;
+      const zz = mapZ(z);
+      state.grids[tabId][zz] = matrix;
     }
 
     function clampActiveZ() {
       if (state.zCount < 1) state.zCount = 1;
       if (state.activeZ < 0) state.activeZ = 0;
       if (state.activeZ >= state.zCount) state.activeZ = state.zCount - 1;
+    }
+    function clampZeroIndex() {
+      if (state.zCount < 1) state.zCount = 1;
+      if (state.zeroIndex < 0) state.zeroIndex = 0;
+      if (state.zeroIndex >= state.zCount) state.zeroIndex = state.zCount - 1;
     }
 
     function clampSize() {
@@ -601,6 +625,43 @@ const state = {
       renderGrid();
     }
 
+    // ===== Collapsible tool categories =====
+    function makeSectionCollapsible(section) {
+      if (!section) return;
+      const header = section.querySelector(':scope > h3');
+      if (!header) return; // only sections with headers are collapsible
+      section.classList.add('collapsible');
+      if (!header.dataset._collapsibleBound) {
+        header.dataset._collapsibleBound = '1';
+        header.addEventListener('click', (e) => {
+          e.preventDefault();
+          section.classList.toggle('collapsed');
+        });
+      }
+    }
+
+    function initCollapsiblesForTab(tabId) {
+      const root = document.querySelector(`aside .section[data-tools="${tabId}"]`);
+      if (!root) return;
+      // Mark all categories (root if it has a header + any nested sections with direct h3) as collapsible
+      const categories = [];
+      const seen = new Set();
+      const pushUnique = (el) => { if (el && !seen.has(el)) { seen.add(el); categories.push(el); } };
+      if (root.querySelector(':scope > h3')) pushUnique(root);
+      root.querySelectorAll('.section > h3').forEach(h => pushUnique(h.parentElement));
+      categories.forEach(makeSectionCollapsible);
+      // Default: collapse all except the first category in this tab
+      categories.forEach((sec, idx) => {
+        if (idx === 0) sec.classList.remove('collapsed');
+        else sec.classList.add('collapsed');
+      });
+    }
+
+    function initAllCollapsibles() {
+      // Build groups are created dynamically; call after catalogs are rendered
+      Tabs.forEach(t => initCollapsiblesForTab(t.id));
+    }
+
     // Display-only token renderer for grid cells (keeps CSV/export unchanged)
     function displayTokenForGrid(raw, scopeId) {
       const s = String(raw || '');
@@ -647,6 +708,48 @@ const state = {
       return s;
     }
 
+  function getShortSymbol(raw, scopeId) {
+      const s = String(raw || '').trim();
+      if (!s || isPlaceholderToken(s)) return '';
+      // Tracks: use compact glyph mapping
+      const baseForTrack = stripPropsAndCfg(s);
+      const isTrack = /^(track)(ramp)?/i.test(baseForTrack);
+      if (isTrack) return displayTokenForGrid(s, scopeId);
+      if (scopeId === 'dig') {
+        const base = stripDigMarkersAndPriority(s);
+        return base ? base.charAt(0) : '';
+      }
+      if (scopeId === 'build') {
+        const base = stripPropsAndCfg(s);
+        // Keep at most 2 chars for compactness (e.g., wc, Tl)
+        return base ? base.slice(0, 2) : '';
+      }
+      if (scopeId === 'place') {
+        // Multi-type stockpile letters e.g., 'yr'
+        const base = stripPropsAndCfg(s);
+        return base;
+      }
+      if (scopeId === 'zone') {
+        const base = stripPropsAndCfg(s);
+        return base ? base.charAt(0) : '';
+      }
+      if (scopeId === 'burrow') {
+        const base = stripPropsAndCfg(s);
+        return base ? base.charAt(0) : '';
+      }
+      if (scopeId === 'query') {
+        return 'q';
+      }
+      return s;
+    }
+
+  function cellTextForDisplay(raw, scopeId) {
+      const s = String(raw || '');
+      if (!s) return s;
+      if (state.showFullSyntax) return s;
+      return getShortSymbol(s, scopeId);
+    }
+
   function renderGrid() {
       const mat = getMatrix(state.activeTab, state.activeZ);
       gridEl.innerHTML = '';
@@ -658,8 +761,8 @@ const state = {
           const td = document.createElement('td');
           td.dataset.r = r; td.dataset.c = c;
           const val = mat[r][c];
-          // Display compact glyphs for tracks only; keep underlying token unchanged
-          td.textContent = displayTokenForGrid(val, state.activeTab);
+          // Text based on display mode (color-only or full syntax)
+          td.textContent = cellTextForDisplay(val, state.activeTab);
           styleCell(td, val, state.activeTab);
           // dig guidance overlay on non-dig tabs
           if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
@@ -1069,7 +1172,8 @@ const state = {
     // history-aware cell setter
     function setCellValue(tabId, z, rr, cc, v) {
       ensureGrids(); ensureHistory();
-      const mat = state.grids[tabId][z];
+      const zz = mapZ(z);
+      const mat = state.grids[tabId][zz];
       if (!mat || rr<0 || cc<0 || rr>=mat.length || cc>=mat[0].length) return;
       const prev = mat[rr][cc];
       if (prev === v) return;
@@ -1088,7 +1192,7 @@ const state = {
         if (tr) {
           const td = tr.cells[cc];
           if (td) {
-            td.textContent = displayTokenForGrid(v, tabId);
+            td.textContent = cellTextForDisplay(v, tabId);
             styleCell(td, v, tabId);
             if (tabId !== 'dig') maybeApplyDigOverlay(td, rr, cc);
           }
@@ -1098,7 +1202,8 @@ const state = {
 
     function getHistoryBucket(tabId = state.activeTab, z = state.activeZ) {
       ensureHistory();
-      return state.history[tabId][z];
+      const zz = mapZ(z);
+      return state.history[tabId][zz];
     }
 
     function historyBegin() {
@@ -1242,7 +1347,7 @@ const state = {
         const bgHex = item[2] || '#666666';
         const val = item[3] ?? '';
         ghost.style.background = bgHex;
-        ghost.textContent = displayTokenForGrid(val, state.activeTab);
+        ghost.textContent = cellTextForDisplay(val, state.activeTab);
         // choose readable text color based on bg
         const lum = luminanceOfHex(bgHex);
         ghost.style.color = lum > 0.6 ? '#111' : '#fff';
@@ -1509,14 +1614,40 @@ const state = {
 
     // Multi-z CSV for a single tab, using #> between floors
     function tabToMultiZCSV(tabId) {
+      // Export from top → bottom (swap up/down vs UI), trimming empty extremes
       ensureGrids();
       const tab = Tabs.find(t => t.id === tabId) || Tabs[0];
       const lines = [tab.header];
-      for (let z = 0; z < state.zCount; z++) {
-        if (z > 0) lines.push('#>');
+      const n = state.zCount;
+      // Find first and last non-empty display layers
+      function isEmptyLayer(zDisp) {
+        const mat = getMatrix(tabId, zDisp);
+        if (!mat) return true;
+        for (let r = 0; r < mat.length; r++) {
+          for (let c = 0; c < mat[0].length; c++) {
+            if (mat[r][c]) return false;
+          }
+        }
+        return true;
+      }
+      let low = 0, high = n - 1;
+      while (low <= high && isEmptyLayer(high)) high--; // trim bottom
+      while (low <= high && isEmptyLayer(low)) low++;   // trim top
+      if (low > high) {
+        // All layers empty: export a single origin layer if possible, else top
+        const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex|0));
+        const mat = getMatrix(tabId, origin);
+        const rows = matrixRowsToCSVLines(mat);
+        for (const r of rows) lines.push(r);
+        return lines.join('\n');
+      }
+      let first = true;
+      for (let z = low; z <= high; z++) { // top to bottom (swap)
+        if (!first) lines.push('#>');
         const mat = getMatrix(tabId, z);
         const rows = matrixRowsToCSVLines(mat);
         for (const r of rows) lines.push(r);
+        first = false;
       }
       return lines.join('\n');
     }
@@ -1524,7 +1655,12 @@ const state = {
     // --- Z-level UI helpers ---
     function updateZLabel() {
       const lbl = document.getElementById('z-label');
-      if (lbl) lbl.textContent = `Z${state.activeZ+1}/${state.zCount}`;
+      if (!lbl) return;
+      clampActiveZ();
+      clampZeroIndex();
+      const rel = state.zeroIndex - state.activeZ; // above origin => positive
+      const s = rel === 0 ? '0' : (rel > 0 ? `+${rel}` : `${rel}`);
+      lbl.textContent = `Z${s}`;
     }
 
     // --- Next-grid preview rendering ---
@@ -1558,8 +1694,8 @@ const state = {
         for (let c = 0; c < mat[0].length; c++) {
           const td = document.createElement('td');
           const val = mat[r][c];
-          // Use same display mapping in previews
-          td.textContent = displayTokenForGrid(val, scopeId);
+          // Match main grid display mode
+          td.textContent = cellTextForDisplay(val, scopeId);
           styleCell(td, val, scopeId);
           if (scopeId !== 'dig') maybeApplyDigOverlay(td, r, c);
           tr.appendChild(td);
@@ -1589,11 +1725,11 @@ const state = {
         gridWrapEl.appendChild(wrapEast);
       }
       
-      // South (below) preview: only if Z > 1, show same tab at Z-1
-      if (state.activeZ > 0) {
+      // South (below) preview: in reversed display order, below is Z+1
+      if (state.activeZ < state.zCount - 1) {
         const wrapSouth = document.createElement('div');
         wrapSouth.className = 'preview south';
-        const tblSouth = buildPreviewTable(state.activeTab, state.activeZ - 1);
+        const tblSouth = buildPreviewTable(state.activeTab, state.activeZ + 1);
         if (tblSouth) {
           wrapSouth.appendChild(tblSouth);
           gridWrapEl.appendChild(wrapSouth);
@@ -2138,51 +2274,65 @@ const state = {
       else if (e.key === '0') { e.preventDefault(); resetZoom(); }
     });
 
-    // Z-level controls
+    // Z-level controls and dynamic creation on scroll
     const zUpBtn = document.getElementById('z-up');
     const zDownBtn = document.getElementById('z-down');
-    const zAddBtn = document.getElementById('z-add');
-    const zDelBtn = document.getElementById('z-del');
-    zUpBtn?.addEventListener('click', () => {
-      clampActiveZ();
-      if (state.activeZ < state.zCount - 1) state.activeZ++;
-      updateZLabel();
-      renderGrid();
-    });
-    zDownBtn?.addEventListener('click', () => {
-      clampActiveZ();
-      if (state.activeZ > 0) state.activeZ--;
-      updateZLabel();
-      renderGrid();
-    });
-    zAddBtn?.addEventListener('click', () => {
-      // add a new empty layer for each tab
+
+    function addTopLayer() {
       Tabs.forEach(t => {
         if (!state.grids[t.id]) state.grids[t.id] = [];
         state.grids[t.id].push(makeMatrix(state.rows, state.cols));
+        if (!state.history[t.id]) state.history[t.id] = [];
+        state.history[t.id].push({ entries: [], idx: 0 });
       });
       state.zCount += 1;
-      state.activeZ = state.zCount - 1;
-      updateZLabel();
-      renderGrid();
-    });
-    zDelBtn?.addEventListener('click', () => {
-      if (state.zCount <= 1) return; // keep at least one level
+      // origin moves one step down relative to top
+      state.zeroIndex += 1;
+      clampZeroIndex();
+    }
+    function addBottomLayer() {
       Tabs.forEach(t => {
         if (!state.grids[t.id]) state.grids[t.id] = [];
-        if (state.grids[t.id].length > 1) {
-          state.grids[t.id].splice(state.activeZ, 1);
-        }
-        // keep history arrays in sync with z-levels
-        if (state.history && state.history[t.id] && state.history[t.id].length > 1) {
-          state.history[t.id].splice(state.activeZ, 1);
-        }
+        state.grids[t.id].unshift(makeMatrix(state.rows, state.cols));
+        if (!state.history[t.id]) state.history[t.id] = [];
+        state.history[t.id].unshift({ entries: [], idx: 0 });
       });
-      state.zCount = Math.max(1, state.zCount - 1);
-      clampActiveZ();
+      state.zCount += 1;
+      // origin index unchanged (new layer below origin)
+      clampZeroIndex();
+    }
+    function navigateZ(delta) {
+      const next = state.activeZ + (delta||0);
+      if (next < 0) {
+        // extend upward (add a new top layer)
+        addTopLayer();
+        state.activeZ = 0;
+      } else if (next >= state.zCount) {
+        // extend downward (add a new bottom layer)
+        addBottomLayer();
+        state.activeZ = state.zCount - 1;
+      } else {
+        state.activeZ = next;
+      }
       updateZLabel();
       renderGrid();
-    });
+    }
+    // Buttons still navigate existing layers (no auto-extend); scroll will extend
+    zUpBtn?.addEventListener('click', () => { clampActiveZ(); if (state.activeZ > 0) navigateZ(-1); });
+    zDownBtn?.addEventListener('click', () => { clampActiveZ(); if (state.activeZ < state.zCount - 1) navigateZ(1); });
+
+    // Mouse wheel over grid navigates z-levels; auto-extends when needed
+    const onWheelZ = (e) => {
+      e.preventDefault();
+      const dy = e.deltaY || 0;
+      // Reverse scroll direction: wheel up moves down; wheel down moves up
+      navigateZ(dy < 0 ? 1 : -1);
+    };
+    if (gridContainerEl) gridContainerEl.addEventListener('wheel', onWheelZ, { passive: false });
+    if (gridWrapEl) gridWrapEl.addEventListener('wheel', (e) => {
+      // Only intercept when over main grid container (not over previews if you prefer page scroll)
+      if (gridContainerEl && gridContainerEl.contains(e.target)) onWheelZ(e);
+    }, { passive: false });
 
     // Selection controls wiring
     const selectToggle = document.getElementById('select-toggle');
@@ -2191,153 +2341,3 @@ const state = {
         state.selectionMode = !state.selectionMode;
         if (state.selectionMode) {
           // entering selection mode cancels painting/shaping preview
-          state.painting = false;
-          state.shaping = false;
-          clearShapePreview();
-          // disable paste mode while selecting
-          state.pasteMode = false;
-          clearPastePreview();
-        }
-        updateSelectionButtons();
-      });
-    }
-    const copySelBtn = document.getElementById('copy-selection');
-    copySelBtn?.addEventListener('click', () => copySelectedArea());
-    const cutSelBtn = document.getElementById('cut-selection');
-    cutSelBtn?.addEventListener('click', () => cutSelectedArea());
-    const clearSelBtn = document.getElementById('clear-selection');
-    clearSelBtn?.addEventListener('click', () => clearSelection());
-    const pasteSelBtn = document.getElementById('paste-selection');
-    pasteSelBtn?.addEventListener('click', () => {
-      if (!state.copyBuffer) return;
-      state.pasteMode = !state.pasteMode;
-      if (state.pasteMode) {
-        state.selectionMode = false;
-      } else { clearPastePreview(); }
-      updateSelectionButtons();
-    });
-    const pasteSkipCb = document.getElementById('paste-skip-blanks');
-    pasteSkipCb?.addEventListener('change', () => {
-      state.pasteSkipBlanks = !!pasteSkipCb.checked;
-      if (state.pasteMode) applyPastePreviewFromHover();
-    });
-    // Transform controls
-    const rotBtn = document.getElementById('rotate-selection');
-    const mxBtn = document.getElementById('mirror-x-selection');
-    const myBtn = document.getElementById('mirror-y-selection');
-    rotBtn?.addEventListener('click', () => transformSelectionOrBuffer('rotate'));
-    mxBtn?.addEventListener('click', () => transformSelectionOrBuffer('mx'));
-    myBtn?.addEventListener('click', () => transformSelectionOrBuffer('my'));
-    // Keyboard shortcuts: Esc clears selection, Ctrl/Cmd+C copies selection if present
-    document.addEventListener('keydown', (e) => {
-      // Avoid interfering with typing in inputs/textareas/contenteditable
-      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
-      const isEditable = tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable);
-      if (e.key === 'Escape') {
-        if (state.pasteMode) { state.pasteMode = false; clearPastePreview(); updateSelectionButtons(); return; }
-        clearSelection();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
-        if (state.selectionRect) { e.preventDefault(); copySelectedArea(); }
-      }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'x' || e.key === 'X')) {
-        if (state.selectionRect) { e.preventDefault(); cutSelectedArea(); }
-      }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
-        if (state.copyBuffer) {
-          e.preventDefault();
-          state.pasteMode = !state.pasteMode;
-          if (!state.pasteMode) clearPastePreview(); else state.selectionMode = false;
-          updateSelectionButtons();
-        }
-      }
-      // Undo / Redo
-      if ((e.ctrlKey || e.metaKey) && !isEditable) {
-        const k = e.key;
-        if (k === 'z' || k === 'Z') {
-          e.preventDefault();
-          if (e.shiftKey) historyRedo(); else historyUndo();
-        } else if (k === 'y' || k === 'Y') {
-          e.preventDefault();
-          historyRedo();
-        }
-      }
-    });
-
-    // (Header project save/load removed to match the copy file.)
-
-    // Wire statusbar actions
-    const undoBtn = document.getElementById('undo-btn');
-    const redoBtn = document.getElementById('redo-btn');
-    function updateUndoRedoButtons() {
-      try {
-        ensureHistory();
-        const bucket = state.history?.[state.activeTab]?.[state.activeZ];
-        const canUndo = !!bucket && bucket.idx > 0;
-        const canRedo = !!bucket && bucket.idx < bucket.entries.length;
-        if (undoBtn) undoBtn.disabled = !canUndo;
-        if (redoBtn) redoBtn.disabled = !canRedo;
-      } catch (_) {
-        if (undoBtn) undoBtn.disabled = true;
-        if (redoBtn) redoBtn.disabled = true;
-      }
-    }
-    undoBtn?.addEventListener('click', () => historyUndo());
-    redoBtn?.addEventListener('click', () => historyRedo());
-
-    document.getElementById('copycsv').addEventListener('click', () => {
-      const csv = tabToMultiZCSV(state.activeTab);
-      copyToClipboard(csv);
-    });
-    document.getElementById('downloadcsv').addEventListener('click', () => {
-      const csv = tabToMultiZCSV(state.activeTab);
-      download(`${state.activeTab}.csv`, csv);
-    });
-    document.getElementById('exportall').addEventListener('click', () => {
-      // Concatenate all tabs; each tab emits multi-z CSV
-      let bundle = '';
-      Tabs.forEach((t, idx) => {
-        const csv = tabToMultiZCSV(t.id);
-        if (idx) bundle += '\n\n';
-        bundle += csv;
-      });
-      download('quickfort-blueprints.csv', bundle);
-    });
-
-    // Load CSV(s) into grids
-    document.getElementById('loadcsv').addEventListener('click', () => {
-      document.getElementById('fileinput').click();
-    });
-    document.getElementById('fileinput').addEventListener('change', (e) => {
-      const f = e.target.files && e.target.files[0];
-      if (!f) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        try {
-          const text = String(reader.result||'');
-          const sheets = splitSheetsFromText(text);
-          if (!sheets.length) return;
-          // compute max dimensions (ignore control rows like #> / #<)
-          let maxR = 0, maxC = 0;
-          sheets.forEach(s => {
-            const filtered = s.matrix.filter(r => !/^#([<>])(\d+)?$/.test(String(r?.[0] ?? '').trim()));
-            const rows = filtered.length;
-            const cols = filtered.reduce((m,r)=>Math.max(m, r.length), 0);
-            if (rows > maxR) maxR = rows;
-            if (cols > maxC) maxC = cols;
-          });
-          maxR = Math.max(1, maxR);
-          maxC = Math.max(1, maxC);
-          if (maxR !== state.rows || maxC !== state.cols) {
-            state.rows = maxR; state.cols = maxC;
-            const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(maxC);
-            const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(maxR);
-            resizeAllGrids(state.rows, state.cols);
-          }
-          // import each sheet, supporting multi-z via #> / #< control rows
-          let firstTab = null;
-          sheets.forEach(s => {
-            const id = headerToTabId(s.header);
-            if (!firstTab) firstTab = id;
-            importSectionToMultiZ(id, s.matrix);
