@@ -2341,3 +2341,688 @@ const state = {
         state.selectionMode = !state.selectionMode;
         if (state.selectionMode) {
           // entering selection mode cancels painting/shaping preview
+          state.painting = false;
+          state.shaping = false;
+          clearShapePreview();
+          // disable paste mode while selecting
+          state.pasteMode = false;
+          clearPastePreview();
+        }
+        updateSelectionButtons();
+      });
+    }
+    const copySelBtn = document.getElementById('copy-selection');
+    copySelBtn?.addEventListener('click', () => copySelectedArea());
+    const cutSelBtn = document.getElementById('cut-selection');
+    cutSelBtn?.addEventListener('click', () => cutSelectedArea());
+    const clearSelBtn = document.getElementById('clear-selection');
+    clearSelBtn?.addEventListener('click', () => clearSelection());
+    const pasteSelBtn = document.getElementById('paste-selection');
+    pasteSelBtn?.addEventListener('click', () => {
+      if (!state.copyBuffer) return;
+      state.pasteMode = !state.pasteMode;
+      if (state.pasteMode) {
+        state.selectionMode = false;
+      } else { clearPastePreview(); }
+      updateSelectionButtons();
+    });
+    const pasteSkipCb = document.getElementById('paste-skip-blanks');
+    pasteSkipCb?.addEventListener('change', () => {
+      state.pasteSkipBlanks = !!pasteSkipCb.checked;
+      if (state.pasteMode) applyPastePreviewFromHover();
+    });
+    // Transform controls
+    const rotBtn = document.getElementById('rotate-selection');
+    const mxBtn = document.getElementById('mirror-x-selection');
+    const myBtn = document.getElementById('mirror-y-selection');
+    rotBtn?.addEventListener('click', () => transformSelectionOrBuffer('rotate'));
+    mxBtn?.addEventListener('click', () => transformSelectionOrBuffer('mx'));
+    myBtn?.addEventListener('click', () => transformSelectionOrBuffer('my'));
+    // Keyboard shortcuts: Esc clears selection, Ctrl/Cmd+C copies selection if present
+    document.addEventListener('keydown', (e) => {
+      // Avoid interfering with typing in inputs/textareas/contenteditable
+      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+      const isEditable = tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable);
+      if (e.key === 'Escape') {
+        if (state.pasteMode) { state.pasteMode = false; clearPastePreview(); updateSelectionButtons(); return; }
+        clearSelection();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+        if (state.selectionRect) { e.preventDefault(); copySelectedArea(); }
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'x' || e.key === 'X')) {
+        if (state.selectionRect) { e.preventDefault(); cutSelectedArea(); }
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+        if (state.copyBuffer) {
+          e.preventDefault();
+          state.pasteMode = !state.pasteMode;
+          if (!state.pasteMode) clearPastePreview(); else state.selectionMode = false;
+          updateSelectionButtons();
+        }
+      }
+      // Undo / Redo
+      if ((e.ctrlKey || e.metaKey) && !isEditable) {
+        const k = e.key;
+        if (k === 'z' || k === 'Z') {
+          e.preventDefault();
+          if (e.shiftKey) historyRedo(); else historyUndo();
+        } else if (k === 'y' || k === 'Y') {
+          e.preventDefault();
+          historyRedo();
+        }
+      }
+    });
+
+    // (Header project save/load removed to match the copy file.)
+
+    // Wire statusbar actions
+    const undoBtn = document.getElementById('undo-btn');
+    const redoBtn = document.getElementById('redo-btn');
+    function updateUndoRedoButtons() {
+      try {
+        ensureHistory();
+        const bucket = state.history?.[state.activeTab]?.[state.activeZ];
+        const canUndo = !!bucket && bucket.idx > 0;
+        const canRedo = !!bucket && bucket.idx < bucket.entries.length;
+        if (undoBtn) undoBtn.disabled = !canUndo;
+        if (redoBtn) redoBtn.disabled = !canRedo;
+      } catch (_) {
+        if (undoBtn) undoBtn.disabled = true;
+        if (redoBtn) redoBtn.disabled = true;
+      }
+    }
+    undoBtn?.addEventListener('click', () => historyUndo());
+    redoBtn?.addEventListener('click', () => historyRedo());
+
+    document.getElementById('copycsv').addEventListener('click', () => {
+      const csv = tabToMultiZCSV(state.activeTab);
+      copyToClipboard(csv);
+    });
+    document.getElementById('downloadcsv').addEventListener('click', () => {
+      const csv = tabToMultiZCSV(state.activeTab);
+      download(`${state.activeTab}.csv`, csv);
+    });
+    document.getElementById('exportall').addEventListener('click', () => {
+      // Concatenate all tabs; each tab emits multi-z CSV
+      let bundle = '';
+      Tabs.forEach((t, idx) => {
+        const csv = tabToMultiZCSV(t.id);
+        if (idx) bundle += '\n\n';
+        bundle += csv;
+      });
+      download('quickfort-blueprints.csv', bundle);
+    });
+
+    // Load CSV(s) into grids
+    document.getElementById('loadcsv').addEventListener('click', () => {
+      document.getElementById('fileinput').click();
+    });
+    document.getElementById('fileinput').addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const text = String(reader.result||'');
+          const sheets = splitSheetsFromText(text);
+          if (!sheets.length) return;
+          // compute max dimensions (ignore control rows like #> / #<)
+          let maxR = 0, maxC = 0;
+          sheets.forEach(s => {
+            const filtered = s.matrix.filter(r => !/^#([<>])(\d+)?$/.test(String(r?.[0] ?? '').trim()));
+            const rows = filtered.length;
+            const cols = filtered.reduce((m,r)=>Math.max(m, r.length), 0);
+            if (rows > maxR) maxR = rows;
+            if (cols > maxC) maxC = cols;
+          });
+          maxR = Math.max(1, maxR);
+          maxC = Math.max(1, maxC);
+          if (maxR !== state.rows || maxC !== state.cols) {
+            state.rows = maxR; state.cols = maxC;
+            const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(maxC);
+            const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(maxR);
+            resizeAllGrids(state.rows, state.cols);
+          }
+          // import each sheet, supporting multi-z via #> / #< control rows
+          let firstTab = null;
+          sheets.forEach(s => {
+            const id = headerToTabId(s.header);
+            if (!firstTab) firstTab = id;
+            importSectionToMultiZ(id, s.matrix);
+          });
+          if (firstTab) setActiveTab(firstTab);
+          else renderGrid();
+        } catch (err) {
+          console.error('Failed to load CSV:', err);
+        } finally {
+          e.target.value = '';
+        }
+      };
+      reader.readAsText(f);
+    });
+
+    // Import a single sheet (matrix rows) into multi-z layers using #> / #< rows
+    function importSectionToMultiZ(tabId, rows) {
+      let currentZ = 0;
+      const matrices = [makeMatrix(state.rows, state.cols)];
+      function ensureLocalZ(idx) {
+        while (matrices.length <= idx) matrices.push(makeMatrix(state.rows, state.cols));
+      }
+      let rr = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i] || [];
+        const first = String(row[0] ?? '').trim();
+        const m = first.match(/^#([<>])(\d+)?$/);
+        if (m) {
+          const dir = m[1];
+          const step = m[2] ? parseInt(m[2], 10) : 1;
+          if (dir === '>') currentZ += step; else if (dir === '<') currentZ = Math.max(0, currentZ - step);
+          ensureLocalZ(currentZ);
+          rr = 0;
+          continue;
+        }
+        ensureLocalZ(currentZ);
+        const mat = matrices[currentZ];
+        if (rr >= state.rows) continue;
+        for (let c = 0; c < Math.min(row.length, state.cols); c++) {
+          mat[rr][c] = row[c] ?? '';
+        }
+        rr++;
+      }
+      // extend global zCount if needed and ensure global structures
+      if (matrices.length > state.zCount) state.zCount = matrices.length;
+      ensureGrids();
+      resizeAllGrids(state.rows, state.cols);
+      // copy into global state for this tab (reverse so last imported is topmost display)
+      for (let z = 0; z < matrices.length; z++) {
+        const displayIndex = (matrices.length - 1) - z;
+        setMatrix(tabId, displayIndex, matrices[z]);
+      }
+      clampActiveZ();
+      updateZLabel();
+    }
+
+    // Help popover wiring
+    (function wireHelpPopover(){
+      const btn = document.getElementById('help-btn');
+      const pop = document.getElementById('help-pop');
+      if (!btn || !pop) return;
+      const hide = () => { pop.classList.add('hidden'); };
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        pop.classList.toggle('hidden');
+      });
+      document.addEventListener('click', (e) => {
+        const t = e.target;
+        if (t === btn || pop.contains(t)) return;
+        hide();
+      });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+    })();
+
+    // Init
+    // Token catalogs from DFHack quickfort guide
+    const DIG_BASIC = [
+      ['d','Dig'], ['h','Channel'], ['u','Up stair'], ['j','Down stair'], ['i','Up/Down stair'], ['r','Ramp'], ['z','Remove up stairs/ramps'],
+      ['n','Remove construction'], ['M','Toggle marker/blueprint'], ['v','Toggle engraving visibility'], ['T','Carve track (generic)'],
+      ['t','Chop trees'], ['p','Gather plants'], ['s','Smooth'], ['e','Engrave'], ['F','Fortification'], ['x','Remove designation'], ['','Eraser']
+    ];
+    const DIG_FLAGS = [
+      ['bc','Claim items'], ['bf','Forbid items'], ['bm','Melt items'], ['bM','Unmelt items'], ['bd','Dump items'], ['bD','Undump items'], ['bh','Hide items'], ['bH','Unhide items'], ['oh','High traffic'], ['on','Normal traffic'], ['ol','Low traffic'], ['or','Restricted traffic']
+    ];
+    const DIG_TRACKS = [
+      'trackN','trackS','trackE','trackW','trackNS','trackEW','trackNE','trackNW','trackSE','trackSW','trackNSE','trackNSW','trackNEW','trackSEW','trackNSEW'
+    ];
+
+    const PLACE_STOCKPILES = [
+      ['','Eraser'],
+      ['a','animal'], ['f','food'], ['u','furniture'], ['n','coins'], ['y','corpses'], ['r','refuse'], ['s','stone'], ['w','wood'], ['e','gem'], ['b','barsblocks'], ['h','cloth'], ['l','leather'], ['z','ammo'], ['S','sheets'], ['g','finished goods'], ['p','weapons'], ['d','armor'], ['c','custom']
+    ];
+
+    const ZONE_TYPES = [
+      ['','Eraser'],
+      ['m','meeting'], ['b','bedroom'], ['h','dining'], ['n','pen/pasture'], ['p','pit/pond'], ['w','water source'], ['j','dungeon'], ['f','fishing'], ['s','sand'], ['o','office'], ['D','dormitory'], ['B','barracks'], ['a','archery'], ['d','garbage'], ['t','animal training'], ['T','tomb'], ['g','gather/pick fruit'], ['c','clay']
+    ];
+    const BURROW_TYPES = [ ['','Eraser'], ['a','add'], ['e','erase'] ];
+
+    // Build catalog (grouped)
+    const BUILD_GROUPS = [
+      { name: 'Furniture', items: [
+        ['a','armor stand'], ['b','bed'], ['c','seat'], ['n','burial receptacle'], ['d','door'], ['x','floodgate'], ['H','floor hatch'], ['W','wall grate'], ['G','floor grate'], ['B','vertical bars'], ['~b','floor bars'], ['f','cabinet'], ['h','container'], ['r','weapon rack'], ['~c','bookcase'], ['F','display furniture'], ['I','buildable instrument'],
+        ['s','statue'], ['t','table'], ['l','well'], ['y','glass window'], ['Y','gem window'], ['A','archery target'], ['m','animal trap'], ['v','restraint'], ['j','cage'], ['N','nest box'], ['~h','hive'], ['a','offering place']
+      ]},
+      { name: 'Roads & Plots', items: [ ['p','farm plot'], ['o','paved road'], ['O','dirt road'], ['k','vermin catcher'] ] },
+      { name: 'Workshops', items: [ ['we','leather works'], ['wq','quern'], ['wM','millstone'], ['wo','loom'], ['wk','clothier'], ['wb','bowyer'], ['wc','carpenter'], ['wf','metalsmith'], ['wv','magma forge'], ['wj','jeweler'], ['wm','stoneworker'], ['wu','butcher'], ['wn','tanner'], ['wr','craftsdwarf'], ['ws','siege workshop'], ['wt','mechanic'], ['wl','still'], ['ww','farmer'], ['wz','kitchen'], ['wh','fishery'], ['wy','ashery'], ['wd','dyer'], ['wS','soap maker'], ['wp','screw press'] ]},
+      { name: 'Furnaces', items: [ ['ew','wood furnace'], ['es','smelter'], ['el','magma smelter'], ['eg','glass furnace'], ['ea','magma glass furnace'], ['ek','kiln'], ['en','magma kiln'] ] },
+      { name: 'Siege Engines', items: [ ['ib','ballista'], ['it','bolt thrower'], ['ic','catapult'] ] },
+      { name: 'Constructions', items: [ ['Cw','wall'], ['CW','reinforced wall'], ['Cf','floor'], ['Cr','ramp'], ['Cu','up stair'], ['Cd','down stair'], ['Cx','up/down stair'], ['CF','fortification'], ['S','support'], ['D','trade depot'], ['g','bridge (retracting)'], ['gw','bridge (raise west)'], ['gd','bridge (raise south)'], ['gx','bridge (raise east)'], ['ga','bridge (raise north)'] ] },
+      { name: 'Track Stops', items: [ ['trackstop','track stop'], ['trackstopN','track stop N'], ['trackstopS','track stop S'], ['trackstopE','track stop E'], ['trackstopW','track stop W'] ] },
+      { name: 'Traps & Levers', items: [ ['Ts','stone-fall trap'], ['Tw','weapon trap'], ['Tl','lever'], ['Tp','pressure plate'], ['Tc','cage trap'], ['TS','upright spear/spike'] ] },
+      { name: 'Constructed Tracks', items: [ ['trackN','track N'], ['trackS','track S'], ['trackE','track E'], ['trackW','track W'], ['trackNS','track NS'], ['trackEW','track EW'], ['trackNE','track NE'], ['trackNW','track NW'], ['trackSE','track SE'], ['trackSW','track SW'], ['trackNSE','track NSE'], ['trackNSW','track NSW'], ['trackNEW','track NEW'], ['trackSEW','track SEW'], ['trackNSEW','track NSEW'], ['trackrampN','ramp N'], ['trackrampS','ramp S'], ['trackrampE','ramp E'], ['trackrampW','ramp W'], ['trackrampNS','ramp NS'], ['trackrampEW','ramp EW'], ['trackrampNE','ramp NE'], ['trackrampNW','ramp NW'], ['trackrampSE','ramp SE'], ['trackrampSW','ramp SW'], ['trackrampNSE','ramp NSE'], ['trackrampNSW','ramp NSW'], ['trackrampNEW','ramp NEW'], ['trackrampSEW','ramp SEW'], ['trackrampNSEW','ramp NSEW'] ] }
+      ,{ name: 'Mechanical Power', items: [
+        ['Msu','screw pump (from south)'], ['Msk','screw pump (from north)'], ['Msm','screw pump (from east)'], ['Msh','screw pump (from west)'],
+        ['Mw','water wheel (vertical)'], ['Mws','water wheel (horizontal)'], ['Mg','gear assembly'],
+        ['Mh','axle (horizontal E-W)'], ['Mhs','axle (horizontal N-S)'], ['Mv','axle (vertical)'],
+        ['rollerNS','roller pushing south'], ['rollerEW','roller pushing west'], ['rollerSN','roller pushing north'], ['rollerWE','roller pushing east']
+      ]}
+    ];
+
+    function buildToolButton(val, label) {
+      const d = document.createElement('div');
+      d.className = 'tool';
+      d.setAttribute('data-tool', val);
+      d.innerHTML = `${label||val}<small>${val}</small>`;
+      return d;
+    }
+
+    function buildColoredToolButton(val, label, color) {
+      const d = document.createElement('div');
+      d.className = 'tool';
+      d.setAttribute('data-tool', val);
+      const title = document.createElement('div');
+      title.textContent = label || val;
+      const small = document.createElement('small');
+      small.className = 'token-pill';
+      // Show display glyphs (e.g., arrows for tracks) in the pill
+      small.textContent = displayTokenForGrid(val, 'dig') || ' ';
+      if (color) { small.style.background = color; ensureReadableText(small, color); }
+      d.appendChild(title);
+      d.appendChild(small);
+      return d;
+    }
+
+    function buildColoredBuildToolButton(val, label) {
+      const d = document.createElement('div');
+      d.className = 'tool';
+      d.setAttribute('data-tool', val);
+      const title = document.createElement('div');
+      title.textContent = label || val;
+      const small = document.createElement('small');
+      small.className = 'token-pill';
+      // Show display glyphs (e.g., arrows for tracks) in the pill
+      small.textContent = displayTokenForGrid(val, 'build');
+      const base = stripPropsAndCfg(val);
+      const col = getBuildColorForToken(base);
+      if (col) {
+        small.style.background = col;
+        ensureReadableText(small, col);
+      }
+      d.appendChild(title);
+      d.appendChild(small);
+      return d;
+    }
+
+    function renderToolCatalogs() {
+      // Dig: basic
+      const digBasic = document.getElementById('dig-basic');
+      DIG_BASIC.forEach(([v,l]) => {
+        const base = stripPropsAndCfg(v);
+        const col = getDigColorForToken(base);
+        digBasic.appendChild(buildColoredToolButton(v,l,col));
+      });
+      // Dig: flags
+      const digFlags = document.getElementById('dig-flags');
+      DIG_FLAGS.forEach(([v,l]) => {
+        const base = stripPropsAndCfg(v);
+        const col = getDigColorForToken(base);
+        digFlags.appendChild(buildColoredToolButton(v,l,col));
+      });
+      // Dig: tracks
+      const digTracks = document.getElementById('dig-tracks');
+      DIG_TRACKS.forEach(v => {
+        const base = stripPropsAndCfg(v);
+        const col = getDigColorForToken(base);
+        digTracks.appendChild(buildColoredToolButton(v, v, col));
+      });
+
+      // Place: stockpiles
+      const place = document.getElementById('place-stockpiles');
+      PLACE_STOCKPILES.forEach(([v,l]) => {
+        const base = stripPropsAndCfg(v);
+        const col = getPlaceColorForToken(base);
+        place.appendChild(buildColoredToolButton(v,l,col));
+      });
+
+      // Place: multi-type builder checkboxes
+      const placeMulti = document.getElementById('place-multi-checks');
+      if (placeMulti) {
+        PLACE_STOCKPILES.forEach(([v, label]) => {
+          if (!v) return; // skip eraser
+          const wrap = document.createElement('label');
+          wrap.className = 'tool';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.value = v;
+          const span = document.createElement('span');
+          span.textContent = label;
+          wrap.appendChild(cb);
+          wrap.appendChild(span);
+          placeMulti.appendChild(wrap);
+        });
+        const placeMultiApply = document.getElementById('place-multi-apply');
+        if (placeMultiApply) {
+          placeMultiApply.addEventListener('click', () => {
+            const checks = document.querySelectorAll('#place-multi-checks input[type=checkbox]');
+            const parts = [];
+            checks.forEach(cb => { if (cb.checked) parts.push(cb.value); });
+            const combo = parts.join('');
+            if (!combo) return;
+            state.selectedToolByTab['place'] = combo;
+            if (typeof updateToolUI === 'function') updateToolUI();
+          });
+        }
+      }
+
+      // Zone
+      const zones = document.getElementById('zone-types');
+      ZONE_TYPES.forEach(([v,l]) => {
+        const base = stripPropsAndCfg(v);
+        const col = getZoneColorForToken(base);
+        zones.appendChild(buildColoredToolButton(v,l,col));
+      });
+
+      // Burrow
+      const burrow = document.getElementById('burrow-types');
+      BURROW_TYPES.forEach(([v,l]) => {
+        const base = stripPropsAndCfg(v);
+        const col = getBurrowColorForToken(base);
+        burrow.appendChild(buildColoredToolButton(v,l,col));
+      });
+
+      // Build groups
+      const groupsEl = document.getElementById('build-groups');
+      groupsEl.innerHTML = '';
+      BUILD_GROUPS.forEach((group, gi) => {
+        const sec = document.createElement('div');
+        sec.className = 'section';
+        const h = document.createElement('h3'); h.textContent = group.name; sec.appendChild(h);
+        const grid = document.createElement('div'); grid.className = 'tool-grid';
+        group.items.forEach(([v,l]) => grid.appendChild(buildColoredBuildToolButton(v,l)));
+        sec.appendChild(grid);
+        groupsEl.appendChild(sec);
+      });
+      // Re-init collapsibles for build tab since groups were added dynamically
+      initCollapsiblesForTab('build');
+    }
+
+    // Property builders for place/zone/burrow
+    function buildPlaceProps() {
+      const props = [];
+      const name = document.getElementById('place-name')?.value?.trim();
+      if (name) props.push(`name=${JSON.stringify(name)}`);
+      const takeFrom = document.getElementById('place-take-from')?.value?.trim();
+      if (takeFrom) props.push(`take_from=${JSON.stringify(takeFrom)}`);
+      const giveTo = document.getElementById('place-give-to')?.value?.trim();
+      if (giveTo) props.push(`give_to=${JSON.stringify(giveTo)}`);
+      const barrels = document.getElementById('place-barrels')?.value;
+      if (barrels !== '' && barrels != null) props.push(`barrels=${Number(barrels)}`);
+      const bins = document.getElementById('place-bins')?.value;
+      if (bins !== '' && bins != null) props.push(`bins=${Number(bins)}`);
+      const wheelbarrows = document.getElementById('place-wheelbarrows')?.value;
+      if (wheelbarrows !== '' && wheelbarrows != null) props.push(`wheelbarrows=${Number(wheelbarrows)}`);
+      const containers = document.getElementById('place-containers')?.value;
+      if (containers !== '' && containers != null) props.push(`containers=${Number(containers)}`);
+      if (document.getElementById('place-links-only')?.checked) props.push('links_only=true');
+      if (document.getElementById('place-quantum')?.checked) props.push('quantum=true');
+      if (document.getElementById('place-automelt')?.checked) props.push('automelt=true');
+      if (document.getElementById('place-autotrade')?.checked) props.push('autotrade=true');
+      if (document.getElementById('place-autodump')?.checked) props.push('autodump=true');
+      if (document.getElementById('place-autotrain')?.checked) props.push('autotrain=true');
+      const extra = document.getElementById('place-props')?.value?.trim();
+      if (extra) props.push(extra);
+      if (!props.length) return '';
+      return `{${props.join(' ')}}`;
+    }
+
+    function buildPlaceConfigSuffix() {
+      const cfg = document.getElementById('place-config')?.value?.trim();
+      if (!cfg) return '';
+      return `:=${cfg}`;
+    }
+
+    function buildPlaceExtentSuffix() {
+      const raw = document.getElementById('place-extent')?.value?.trim();
+      if (!raw) return '';
+      const m = raw.match(/^\(?\s*(\d+)\s*x\s*(\d+)\s*\)?$/i);
+      if (!m) return '';
+      const w = m[1];
+      const h = m[2];
+      return `(${w}x${h})`;
+    }
+
+    function buildZoneProps() {
+      const props = [];
+      const name = document.getElementById('zone-name')?.value?.trim();
+      if (name) props.push(`name=${JSON.stringify(name)}`);
+      const locType = document.getElementById('zone-location')?.value;
+      const locName = document.getElementById('zone-location-name')?.value?.trim();
+      if (locType) {
+        const loc = locName ? `${locType}/${locName}` : locType;
+        props.push(`location=${loc}`);
+      }
+      const prof = document.getElementById('zone-profession')?.value?.trim();
+      if (prof) props.push(`profession=${prof}`);
+      const extra = document.getElementById('zone-props')?.value?.trim();
+      if (extra) props.push(extra);
+      if (!props.length) return '';
+      return `{${props.join(' ')}}`;
+    }
+
+    function buildBurrowProps() {
+      const props = [];
+      const name = document.getElementById('burrow-name')?.value?.trim();
+      if (name) props.push(`name=${JSON.stringify(name)}`);
+      if (document.getElementById('burrow-create')?.checked) props.push('create=true');
+      const civalert = document.getElementById('burrow-civalert')?.value?.trim();
+      if (civalert) props.push(`civalert=${JSON.stringify(civalert)}`);
+      const extra = document.getElementById('burrow-props')?.value?.trim();
+      if (extra) props.push(extra);
+      if (!props.length) return '';
+      return `{${props.join(' ')}}`;
+    }
+
+    function composeTokenForPaint(scopeId) {
+      let token = state.selectedToolByTab[scopeId] || '';
+      if (!token) return '';
+      // dig markers
+      if (scopeId === 'dig') {
+        const parts = [];
+        if (document.getElementById('dig-mb').checked) parts.push('mb');
+        if (document.getElementById('dig-mw').checked) parts.push('mw');
+        if (document.getElementById('dig-md').checked) parts.push('md');
+        token = parts.join('') + token;
+        const pr = document.getElementById('dig-priority')?.value || '';
+        if (pr && !/[1-7]$/.test(token)) token = token + pr;
+      }
+      if (scopeId === 'place') {
+        const props = buildPlaceProps();
+        const cfg = buildPlaceConfigSuffix();
+        const ext = buildPlaceExtentSuffix();
+        if (props) token += props;
+        if (cfg) token += cfg;
+        if (ext) token += ext; // append extent at the very end
+        return token;
+      }
+      if (scopeId === 'zone') {
+        const props = buildZoneProps();
+        if (props) token += props;
+        return token;
+      }
+      if (scopeId === 'burrow') {
+        const props = buildBurrowProps();
+        if (props) token += props;
+        return token;
+      }
+      return token;
+    }
+
+    // Wire dig marker toggles to update label preview if tool is set
+    function wireDigMarkers() {
+      ['dig-mb','dig-mw','dig-md','dig-priority'].forEach(id => {
+        document.getElementById(id).addEventListener('change', updateToolUI);
+      });
+    }
+
+    // Wire property inputs to refresh preview
+    function wirePropInputs() {
+      const ids = [
+        'place-name','place-take-from','place-give-to','place-barrels','place-bins','place-wheelbarrows','place-containers',
+        'place-links-only','place-quantum','place-automelt','place-autotrade','place-autodump','place-autotrain','place-config','place-extent','place-props',
+        'zone-name','zone-location','zone-location-name','zone-profession','zone-props',
+        'burrow-name','burrow-create','burrow-civalert','burrow-props'
+      ];
+      ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const ev = (el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'number')) ? 'input' : 'change';
+        el.addEventListener(ev, updateToolUI);
+      });
+    }
+
+    function wireBuildSearch() {
+      const input = document.getElementById('build-search');
+      input.addEventListener('input', () => {
+        const q = input.value.trim().toLowerCase();
+        document.querySelectorAll('#build-groups .tool').forEach(btn => {
+          const val = (btn.getAttribute('data-tool')||'').toLowerCase();
+          const text = btn.textContent.toLowerCase();
+          const show = !q || val.includes(q) || text.includes(q);
+          btn.style.display = show ? '' : 'none';
+        });
+      });
+    }
+
+    
+
+    function init() {
+      document.getElementById('cols').value = defaultCols;
+      document.getElementById('rows').value = defaultRows;
+      // sync brush input to state and validate
+      const brushInput = document.getElementById('brush-size');
+      if (brushInput) {
+        brushInput.addEventListener('input', () => {
+          const n = parseInt(brushInput.value || '1', 10);
+          let v = isNaN(n) ? 1 : Math.max(1, Math.min(25, n));
+          state.brushSize = v;
+        });
+        const bInc = document.getElementById('brush-inc');
+        const bDec = document.getElementById('brush-dec');
+        bInc?.addEventListener('click', () => {
+          const next = Math.min(25, (getBrushSize() || 1) + 1);
+          state.brushSize = next;
+          brushInput.value = String(next);
+        });
+        bDec?.addEventListener('click', () => {
+          const next = Math.max(1, (getBrushSize() || 1) - 1);
+          state.brushSize = next;
+          brushInput.value = String(next);
+        });
+      }
+      ensureGrids();
+      renderTabs();
+      setActiveTab('dig');
+      renderToolCatalogs();
+      // Initialize collapsible tool categories (after catalogs are built)
+      initAllCollapsibles();
+      wireTools();
+      wireBuildSearch();
+      wireDigMarkers();
+      wirePropInputs();
+      updateToolUI();
+      applyZoom();
+      // shape controls
+      const shapeSel = document.getElementById('shape-select');
+      const shapeOutlineWrap = document.getElementById('shape-outline-wrap');
+      const shapeOutline = document.getElementById('shape-outline');
+      if (shapeSel) {
+        shapeSel.value = state.selectedShape;
+        const refreshOutlineVisibility = () => {
+          const v = shapeSel.value;
+          // Outline applies to rectangles and circles
+          if (shapeOutlineWrap) shapeOutlineWrap.style.display = (v === 'rect' || v === 'circle') ? '' : 'none';
+        };
+        refreshOutlineVisibility();
+        shapeSel.addEventListener('change', () => {
+          state.selectedShape = shapeSel.value;
+          refreshOutlineVisibility();
+          // clear any stale preview if switching modes mid-drag
+          clearShapePreview();
+          state.shaping = false;
+          state.shapeStart = null;
+          state.shapeLast = null;
+        });
+      }
+      if (shapeOutline) {
+        shapeOutline.checked = !!state.shapeOutline;
+        shapeOutline.addEventListener('change', () => {
+          state.shapeOutline = !!shapeOutline.checked;
+        });
+      }
+      // Default tool per tab
+      state.selectedToolByTab['dig'] = 'd';
+      updateToolUI();
+      updateSelectionButtons();
+      updateUndoRedoButtons();
+      // Re-evaluate preview on window resize
+      window.addEventListener('resize', () => { maybeRenderPreview(); });
+      // Preview toggle button (visually consistent with Syntax toggle)
+      const prevBtn = document.getElementById('preview-toggle-btn');
+      if (prevBtn) {
+        const refreshPrevBtn = () => {
+          prevBtn.classList.toggle('active', !!state.previewEnabled);
+          prevBtn.title = state.previewEnabled ? 'Previews enabled' : 'Previews disabled';
+        };
+        refreshPrevBtn();
+        prevBtn.addEventListener('click', () => {
+          state.previewEnabled = !state.previewEnabled;
+          refreshPrevBtn();
+          maybeRenderPreview();
+        });
+      }
+      // Syntax display toggle
+      const syntaxBtn = document.getElementById('syntax-toggle');
+      if (syntaxBtn) {
+        const refreshSyntaxBtn = () => {
+          const full = !!state.showFullSyntax;
+          syntaxBtn.classList.toggle('active', full);
+          syntaxBtn.textContent = full ? 'Full Syntax' : 'Color Only';
+          syntaxBtn.title = full ? 'Showing full syntax in cells' : 'Showing color-only cells';
+        };
+        refreshSyntaxBtn();
+        syntaxBtn.addEventListener('click', () => {
+          state.showFullSyntax = !state.showFullSyntax;
+          refreshSyntaxBtn();
+          // Re-render grid and previews to apply text change
+          renderGrid();
+        });
+      }
+      // Mirror toggles
+      const mvToggle = document.getElementById('mirror-v-toggle');
+      const mhToggle = document.getElementById('mirror-h-toggle');
+      if (mvToggle) {
+        state.mirrorVEnabled = !!mvToggle.checked;
+        mvToggle.addEventListener('change', () => {
+          state.mirrorVEnabled = !!mvToggle.checked;
+          renderAxesOverlay();
+        });
+      }
+      if (mhToggle) {
+        state.mirrorHEnabled = !!mhToggle.checked;
+        mhToggle.addEventListener('change', () => {
+          state.mirrorHEnabled = !!mhToggle.checked;
+          renderAxesOverlay();
+        });
+      }
+      // Update axes overlay on resize as well
+      window.addEventListener('resize', () => { renderAxesOverlay(); });
+      // Initialize z-label and ensure first render uses active z
+      ensureGrids();
+      updateZLabel();
+      renderGrid();
+    }
+    init();
+  </script>
+</body>
+</html>
