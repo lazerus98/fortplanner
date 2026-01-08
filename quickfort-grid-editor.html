@@ -166,9 +166,12 @@
         <span id="z-label" class="note" style="min-width:56px; display:inline-block; text-align:center;">Z0</span>
         <button id="z-down" class="secondary" title="Down one z-level">Z+</button>
         <button id="z-up" title="Up one z-level">Z-</button>
+        <button id="z-add" class="secondary" title="Add a new top Z-level">Add Z</button>
+        <button id="z-del" class="secondary" title="Delete current Z-level (if more than one)">Del Z</button>
       </div>
       <button id="preview-toggle-btn" class="secondary" title="Toggle preview panels">Preview</button>
       <button id="syntax-toggle" class="secondary" title="Toggle cell text: color-only vs full">Full Syntax</button>
+      <button id="trim-empty-z-btn" class="secondary" title="Remove empty Z-levels at top/bottom (current view)">Trim Z</button>
       <button id="cleargrid" class="secondary">Clear Current Grid</button>
       <button id="help-btn" class="secondary" title="Usage help" aria-label="Help">?</button>
       <div id="help-pop" class="popover hidden">
@@ -185,7 +188,7 @@
         grid to move the mirror lines.<br><br>
 
         <strong>Z-levels & dig overlay</strong><br>
-        Z+ / Z− switch floors. Scroll over the grid to move through Z-levels; scrolling past the current bounds creates a new level in that direction. The "Preview"
+        Z+ / Z− switch floors and extend when you go past the top/bottom. Scrolling over the grid only navigates within existing Z-levels (no auto-add). The "Preview"
         button shows the next Z-level as a faded overlay to help align towers, stair stacks,
         etc. Dig designations from the #dig tab are shown as a green overlay on the other tabs
         for alignment.<br><br>
@@ -499,6 +502,8 @@ const state = {
       zeroIndex: 0,             // display index of Z=0 (origin)
       // display mode for cells
       showFullSyntax: false,
+      // Z import/export fidelity default (preserve is default mode)
+      preserveZOrder: true,
     };
 
     const gridEl = document.getElementById('grid');
@@ -1614,12 +1619,67 @@ const state = {
 
     // Multi-z CSV for a single tab, using #> between floors
     function tabToMultiZCSV(tabId) {
-      // Export from top → bottom (swap up/down vs UI), trimming empty extremes
+      // Two modes:
+      // - Default (preserveZOrder=false): trim empty extremes, export contiguous window top→bottom
+      // - Preserve (preserveZOrder=true): export all display layers 0..zCount-1 with no trimming, 
+      //   and include a metadata line "#0N" to preserve zeroIndex for round-trips in this editor
       ensureGrids();
       const tab = Tabs.find(t => t.id === tabId) || Tabs[0];
       const lines = [tab.header];
       const n = state.zCount;
-      // Find first and last non-empty display layers
+
+      if (state.preserveZOrder) {
+        // Preserve: include origin metadata for round-trip within editor
+        const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex|0));
+        lines.push(`#0${origin}`);
+        for (let z = 0; z < n; z++) {
+          if (z > 0) lines.push('#>');
+          const mat = getMatrix(tabId, z);
+          const rows = matrixRowsToCSVLines(mat);
+          for (const r of rows) lines.push(r);
+        }
+        return lines.join('\n');
+      } else {
+        // Default behavior: trim empty extremes
+        function isEmptyLayer(zDisp) {
+          const mat = getMatrix(tabId, zDisp);
+          if (!mat) return true;
+          for (let r = 0; r < mat.length; r++) {
+            for (let c = 0; c < mat[0].length; c++) {
+              if (mat[r][c]) return false;
+            }
+          }
+          return true;
+        }
+        let low = 0, high = n - 1;
+        while (low <= high && isEmptyLayer(high)) high--; // trim bottom
+        while (low <= high && isEmptyLayer(low)) low++;   // trim top
+        if (low > high) {
+          // All layers empty: export a single origin layer if possible, else top
+          const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex|0));
+          const mat = getMatrix(tabId, origin);
+          const rows = matrixRowsToCSVLines(mat);
+          for (const r of rows) lines.push(r);
+          return lines.join('\n');
+        }
+        let first = true;
+        for (let z = low; z <= high; z++) {
+          if (!first) lines.push('#>');
+          const mat = getMatrix(tabId, z);
+          const rows = matrixRowsToCSVLines(mat);
+          for (const r of rows) lines.push(r);
+          first = false;
+        }
+        return lines.join('\n');
+      }
+    }
+
+    // Build a one-off trimmed CSV for the current tab (Quickfort-friendly)
+    function tabToMultiZCSVTrimmed(tabId) {
+      ensureGrids();
+      const tab = Tabs.find(t => t.id === tabId) || Tabs[0];
+      const lines = [tab.header];
+      const n = state.zCount;
       function isEmptyLayer(zDisp) {
         const mat = getMatrix(tabId, zDisp);
         if (!mat) return true;
@@ -1642,7 +1702,7 @@ const state = {
         return lines.join('\n');
       }
       let first = true;
-      for (let z = low; z <= high; z++) { // top to bottom (swap)
+      for (let z = low; z <= high; z++) {
         if (!first) lines.push('#>');
         const mat = getMatrix(tabId, z);
         const rows = matrixRowsToCSVLines(mat);
@@ -2274,9 +2334,11 @@ const state = {
       else if (e.key === '0') { e.preventDefault(); resetZoom(); }
     });
 
-    // Z-level controls and dynamic creation on scroll
+    // Z-level controls: buttons can extend; scroll only navigates
     const zUpBtn = document.getElementById('z-up');
     const zDownBtn = document.getElementById('z-down');
+    const zAddBtn = document.getElementById('z-add');
+    const zDelBtn = document.getElementById('z-del');
 
     function addTopLayer() {
       Tabs.forEach(t => {
@@ -2317,16 +2379,45 @@ const state = {
       updateZLabel();
       renderGrid();
     }
-    // Buttons still navigate existing layers (no auto-extend); scroll will extend
-    zUpBtn?.addEventListener('click', () => { clampActiveZ(); if (state.activeZ > 0) navigateZ(-1); });
-    zDownBtn?.addEventListener('click', () => { clampActiveZ(); if (state.activeZ < state.zCount - 1) navigateZ(1); });
+    // Buttons extend at bounds; scroll only navigates
+    zUpBtn?.addEventListener('click', () => { clampActiveZ(); navigateZ(-1); });
+    zDownBtn?.addEventListener('click', () => { clampActiveZ(); navigateZ(1); });
 
-    // Mouse wheel over grid navigates z-levels; auto-extends when needed
+    // Add/Delete Z controls
+    function deleteActiveLayer() {
+      if (state.zCount <= 1) return;
+      const disp = state.activeZ;
+      const storage = mapZ(disp);
+      Tabs.forEach(t => {
+        if (!state.grids[t.id]) state.grids[t.id] = [];
+        state.grids[t.id].splice(storage, 1);
+        if (!state.history[t.id]) state.history[t.id] = [];
+        state.history[t.id].splice(storage, 1);
+      });
+      state.zCount -= 1;
+      if (disp < state.zeroIndex) state.zeroIndex = Math.max(0, state.zeroIndex - 1);
+      if (state.activeZ >= state.zCount) state.activeZ = state.zCount - 1;
+      clampZeroIndex();
+      updateZLabel();
+      renderGrid();
+    }
+    zAddBtn?.addEventListener('click', () => { addTopLayer(); state.activeZ = 0; updateZLabel(); renderGrid(); });
+    zDelBtn?.addEventListener('click', () => { deleteActiveLayer(); });
+
+    // Mouse wheel over grid navigates z-levels only (no auto-extend)
+    function navigateZNoExtend(delta) {
+      const next = Math.max(0, Math.min(state.zCount - 1, state.activeZ + (delta||0)));
+      if (next !== state.activeZ) {
+        state.activeZ = next;
+        updateZLabel();
+        renderGrid();
+      }
+    }
     const onWheelZ = (e) => {
       e.preventDefault();
       const dy = e.deltaY || 0;
       // Reverse scroll direction: wheel up moves down; wheel down moves up
-      navigateZ(dy < 0 ? 1 : -1);
+      navigateZNoExtend(dy < 0 ? 1 : -1);
     };
     if (gridContainerEl) gridContainerEl.addEventListener('wheel', onWheelZ, { passive: false });
     if (gridWrapEl) gridWrapEl.addEventListener('wheel', (e) => {
@@ -2468,10 +2559,15 @@ const state = {
           const text = String(reader.result||'');
           const sheets = splitSheetsFromText(text);
           if (!sheets.length) return;
-          // compute max dimensions (ignore control rows like #> / #<)
+          // compute max dimensions (ignore control rows like #> / #< / #0N)
           let maxR = 0, maxC = 0;
           sheets.forEach(s => {
-            const filtered = s.matrix.filter(r => !/^#([<>])(\d+)?$/.test(String(r?.[0] ?? '').trim()));
+            const filtered = s.matrix.filter(r => {
+              const first = String(r?.[0] ?? '').trim();
+              if (/^#([<>])(\d+)?$/.test(first)) return false; // #>, #<, #>N, #<N
+              if (/^#0(\d+)$/.test(first)) return false;       // #0N (origin metadata for preserve mode)
+              return true;
+            });
             const rows = filtered.length;
             const cols = filtered.reduce((m,r)=>Math.max(m, r.length), 0);
             if (rows > maxR) maxR = rows;
@@ -2503,9 +2599,11 @@ const state = {
       reader.readAsText(f);
     });
 
-    // Import a single sheet (matrix rows) into multi-z layers using #> / #< rows
+    // Import a single sheet (matrix rows) into multi-z layers using #> / #< rows.
+    // In preserve mode, also recognizes #0N to restore zeroIndex and keeps exact order.
     function importSectionToMultiZ(tabId, rows) {
       let currentZ = 0;
+      let savedZero = null;
       const matrices = [makeMatrix(state.rows, state.cols)];
       function ensureLocalZ(idx) {
         while (matrices.length <= idx) matrices.push(makeMatrix(state.rows, state.cols));
@@ -2514,6 +2612,9 @@ const state = {
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i] || [];
         const first = String(row[0] ?? '').trim();
+        // Preserve-mode origin metadata
+        const m0 = first.match(/^#0(\d+)$/);
+        if (m0) { savedZero = parseInt(m0[1], 10); continue; }
         const m = first.match(/^#([<>])(\d+)?$/);
         if (m) {
           const dir = m[1];
@@ -2531,14 +2632,24 @@ const state = {
         }
         rr++;
       }
-      // extend global zCount if needed and ensure global structures
+      // Extend global zCount if needed and ensure global structures
       if (matrices.length > state.zCount) state.zCount = matrices.length;
       ensureGrids();
       resizeAllGrids(state.rows, state.cols);
-      // copy into global state for this tab (reverse so last imported is topmost display)
-      for (let z = 0; z < matrices.length; z++) {
-        const displayIndex = (matrices.length - 1) - z;
-        setMatrix(tabId, displayIndex, matrices[z]);
+      if (state.preserveZOrder) {
+        // Preserve: copy 1:1 to display indices (no reversal)
+        for (let z = 0; z < matrices.length; z++) {
+          setMatrix(tabId, z, matrices[z]);
+        }
+        if (savedZero != null) {
+          state.zeroIndex = Math.max(0, Math.min(state.zCount - 1, savedZero|0));
+        }
+      } else {
+        // Default: reverse so last imported becomes topmost display
+        for (let z = 0; z < matrices.length; z++) {
+          const displayIndex = (matrices.length - 1) - z;
+          setMatrix(tabId, displayIndex, matrices[z]);
+        }
       }
       clampActiveZ();
       updateZLabel();
@@ -2979,6 +3090,78 @@ const state = {
           state.previewEnabled = !state.previewEnabled;
           refreshPrevBtn();
           maybeRenderPreview();
+        });
+      }
+      // Trim empty Z-levels at extremes based on current tab, without harming other tabs
+      const trimBtn = document.getElementById('trim-empty-z-btn');
+      if (trimBtn) {
+        const isLayerEmpty = (tabId, zDisp) => {
+          const mat = getMatrix(tabId, zDisp);
+          if (!mat) return true;
+          for (let r = 0; r < mat.length; r++) {
+            for (let c = 0; c < mat[0].length; c++) {
+              if (mat[r][c]) return false;
+            }
+          }
+          return true;
+        };
+        const isLayerEmptyAllTabs = (zDisp) => {
+          for (const t of Tabs) {
+            if (!isLayerEmpty(t.id, zDisp)) return false;
+          }
+          return true;
+        };
+        const removeTopDisplayLayer = () => {
+          Tabs.forEach(t => {
+            if (!state.grids[t.id]) state.grids[t.id] = [];
+            state.grids[t.id].pop(); // top display layer is at end
+            if (!state.history[t.id]) state.history[t.id] = [];
+            state.history[t.id].pop();
+          });
+          state.zCount -= 1;
+          if (state.zeroIndex > 0) state.zeroIndex -= 1; // origin shifts up by one
+          if (state.activeZ > 0) state.activeZ -= 1;
+        };
+        const removeBottomDisplayLayer = () => {
+          Tabs.forEach(t => {
+            if (!state.grids[t.id]) state.grids[t.id] = [];
+            state.grids[t.id].shift(); // bottom display layer is at start
+            if (!state.history[t.id]) state.history[t.id] = [];
+            state.history[t.id].shift();
+          });
+          state.zCount -= 1;
+          // zeroIndex unchanged when removing bottom
+          if (state.activeZ >= state.zCount) state.activeZ = state.zCount - 1;
+        };
+        trimBtn.addEventListener('click', () => {
+          try {
+            clampActiveZ();
+            // find empty extremes based on active tab
+            let low = 0, high = state.zCount - 1;
+            while (low <= high && isLayerEmpty(state.activeTab, low)) low++;
+            while (low <= high && isLayerEmpty(state.activeTab, high)) high--;
+            // number potentially to trim
+            let trimTop = low;
+            let trimBottom = (state.zCount - 1) - high;
+            let any = false;
+            // Trim from top while globally empty
+            while (trimTop > 0 && state.zCount > 1 && isLayerEmptyAllTabs(0)) {
+              removeTopDisplayLayer();
+              trimTop--; any = true;
+            }
+            // Trim from bottom while globally empty
+            while (trimBottom > 0 && state.zCount > 1 && isLayerEmptyAllTabs(state.zCount - 1)) {
+              removeBottomDisplayLayer();
+              trimBottom--; any = true;
+            }
+            clampActiveZ();
+            clampZeroIndex();
+            updateZLabel();
+            renderGrid();
+            if (!any) {
+              console.info('No empty Z-levels to trim (or other tabs contain data on extremes).');
+            }
+          } catch (e) { console.error('Trim Z failed', e); }
         });
       }
       // Syntax display toggle
