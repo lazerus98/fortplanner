@@ -748,10 +748,10 @@ const state = {
       return s;
     }
 
-  function cellTextForDisplay(raw, scopeId) {
+  function cellTextForDisplay(raw, scopeId, fullText) {
       const s = String(raw || '');
       if (!s) return s;
-      if (state.showFullSyntax) return s;
+      if (!!fullText) return s;
       return getShortSymbol(s, scopeId);
     }
 
@@ -767,7 +767,8 @@ const state = {
           td.dataset.r = r; td.dataset.c = c;
           const val = mat[r][c];
           // Text based on display mode (color-only or full syntax)
-          td.textContent = cellTextForDisplay(val, state.activeTab);
+          td.textContent = cellTextForDisplay(val, state.activeTab, state.showFullSyntax);
+          td.title = cellTextForDisplay(val, state.activeTab, true);
           styleCell(td, val, state.activeTab);
           // dig guidance overlay on non-dig tabs
           if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
@@ -1197,7 +1198,7 @@ const state = {
         if (tr) {
           const td = tr.cells[cc];
           if (td) {
-            td.textContent = cellTextForDisplay(v, tabId);
+            td.textContent = cellTextForDisplay(v, tabId, state.showFullSyntax);
             styleCell(td, v, tabId);
             if (tabId !== 'dig') maybeApplyDigOverlay(td, rr, cc);
           }
@@ -1352,7 +1353,7 @@ const state = {
         const bgHex = item[2] || '#666666';
         const val = item[3] ?? '';
         ghost.style.background = bgHex;
-        ghost.textContent = cellTextForDisplay(val, state.activeTab);
+        ghost.textContent = cellTextForDisplay(val, state.activeTab, state.showFullSyntax);
         // choose readable text color based on bg
         const lum = luminanceOfHex(bgHex);
         ghost.style.color = lum > 0.6 ? '#111' : '#fff';
@@ -1755,7 +1756,7 @@ const state = {
           const td = document.createElement('td');
           const val = mat[r][c];
           // Match main grid display mode
-          td.textContent = cellTextForDisplay(val, scopeId);
+          td.textContent = cellTextForDisplay(val, scopeId, state.showFullSyntax);
           styleCell(td, val, scopeId);
           if (scopeId !== 'dig') maybeApplyDigOverlay(td, r, c);
           tr.appendChild(td);
@@ -2546,6 +2547,30 @@ const state = {
       download('quickfort-blueprints.csv', bundle);
     });
 
+
+    function findMaxDimensionsOfSection(section) {
+        const levelChangeRgx = /^#([<>])(\d+)?$/;
+        let maxCols = 0;
+        let maxConsecutive = 0;
+        let currentConsecutive = 0;
+
+        for (const row of section) {
+            // Update maxCols
+            if (row.length > maxCols) maxCols = row.length;
+
+            // Check if first field matches levelChangeRgx
+            const firstField = String(row[0] ?? '').trim();
+            if (!levelChangeRgx.test(firstField)) {
+                currentConsecutive++;
+                if (currentConsecutive > maxConsecutive) maxConsecutive = currentConsecutive;
+            } else {
+                currentConsecutive = 0;
+            }
+        }
+
+        return [ maxCols, maxConsecutive ];
+    }
+
     // Load CSV(s) into grids
     document.getElementById('loadcsv').addEventListener('click', () => {
       document.getElementById('fileinput').click();
@@ -2562,14 +2587,7 @@ const state = {
           // compute max dimensions (ignore control rows like #> / #< / #0N)
           let maxR = 0, maxC = 0;
           sheets.forEach(s => {
-            const filtered = s.matrix.filter(r => {
-              const first = String(r?.[0] ?? '').trim();
-              if (/^#([<>])(\d+)?$/.test(first)) return false; // #>, #<, #>N, #<N
-              if (/^#0(\d+)$/.test(first)) return false;       // #0N (origin metadata for preserve mode)
-              return true;
-            });
-            const rows = filtered.length;
-            const cols = filtered.reduce((m,r)=>Math.max(m, r.length), 0);
+            const [cols, rows] = findMaxDimensionsOfSection(s.matrix);
             if (rows > maxR) maxR = rows;
             if (cols > maxC) maxC = cols;
           });
@@ -2702,7 +2720,7 @@ const state = {
     const BUILD_GROUPS = [
       { name: 'Furniture', items: [
         ['a','armor stand'], ['b','bed'], ['c','seat'], ['n','burial receptacle'], ['d','door'], ['x','floodgate'], ['H','floor hatch'], ['W','wall grate'], ['G','floor grate'], ['B','vertical bars'], ['~b','floor bars'], ['f','cabinet'], ['h','container'], ['r','weapon rack'], ['~c','bookcase'], ['F','display furniture'], ['I','buildable instrument'],
-        ['s','statue'], ['t','table'], ['l','well'], ['y','glass window'], ['Y','gem window'], ['A','archery target'], ['m','animal trap'], ['v','restraint'], ['j','cage'], ['N','nest box'], ['~h','hive'], ['a','offering place']
+        ['s','statue'], ['t','table'], ['l','well'], ['y','glass window'], ['Y','gem window'], ['A','archery target'], ['m','animal trap'], ['v','restraint'], ['j','cage'], ['N','nest box'], ['~h','hive'], ['~a','offering place']
       ]},
       { name: 'Roads & Plots', items: [ ['p','farm plot'], ['o','paved road'], ['O','dirt road'], ['k','vermin catcher'] ] },
       { name: 'Workshops', items: [ ['we','leather works'], ['wq','quern'], ['wM','millstone'], ['wo','loom'], ['wk','clothier'], ['wb','bowyer'], ['wc','carpenter'], ['wf','metalsmith'], ['wv','magma forge'], ['wj','jeweler'], ['wm','stoneworker'], ['wu','butcher'], ['wn','tanner'], ['wr','craftsdwarf'], ['ws','siege workshop'], ['wt','mechanic'], ['wl','still'], ['ww','farmer'], ['wz','kitchen'], ['wh','fishery'], ['wy','ashery'], ['wd','dyer'], ['wS','soap maker'], ['wp','screw press'] ]},
