@@ -2547,6 +2547,30 @@ const state = {
       download('quickfort-blueprints.csv', bundle);
     });
 
+
+    function findMaxDimensionsOfSection(section) {
+        const levelChangeRgx = /^#([<>])(\d+)?$/;
+        let maxCols = 0;
+        let maxConsecutive = 0;
+        let currentConsecutive = 0;
+
+        for (const row of section) {
+            // Update maxCols
+            if (row.length > maxCols) maxCols = row.length;
+
+            // Check if first field matches levelChangeRgx
+            const firstField = String(row[0] ?? '').trim();
+            if (!levelChangeRgx.test(firstField)) {
+                currentConsecutive++;
+                if (currentConsecutive > maxConsecutive) maxConsecutive = currentConsecutive;
+            } else {
+                currentConsecutive = 0;
+            }
+        }
+
+        return [ maxCols, maxConsecutive ];
+    }
+
     // Load CSV(s) into grids
     document.getElementById('loadcsv').addEventListener('click', () => {
       document.getElementById('fileinput').click();
@@ -2563,14 +2587,7 @@ const state = {
           // compute max dimensions (ignore control rows like #> / #< / #0N)
           let maxR = 0, maxC = 0;
           sheets.forEach(s => {
-            const filtered = s.matrix.filter(r => {
-              const first = String(r?.[0] ?? '').trim();
-              if (/^#([<>])(\d+)?$/.test(first)) return false; // #>, #<, #>N, #<N
-              if (/^#0(\d+)$/.test(first)) return false;       // #0N (origin metadata for preserve mode)
-              return true;
-            });
-            const rows = filtered.length;
-            const cols = filtered.reduce((m,r)=>Math.max(m, r.length), 0);
+            const [cols, rows] = findMaxDimensionsOfSection(s.matrix);
             if (rows > maxR) maxR = rows;
             if (cols > maxC) maxC = cols;
           });
