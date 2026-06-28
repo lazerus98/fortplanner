@@ -3,85 +3,280 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Quickfort Grid Editor</title>
+  <title>Quickfort Grid Editor (prototype)</title>
+  <!-- xlsx-js-style: a styled SheetJS fork (Apache-2.0) that can WRITE cell fills,
+       which the plain SheetJS community build cannot. Powers all "Export .xlsx" buttons,
+       including the shaded export that mirrors the grid colours. Same `XLSX` global and
+       API as SheetJS, so import/read code is unchanged. Loaded lazily-tolerant: if the CDN
+       is unreachable (offline), the xlsx buttons warn and CSV export still works. -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
   <style>
-    :root { --bg:#0f0f12; --panel:#17171c; --muted:#2a2a32; --fg:#e6e6e9; --fg2:#b8b8c2; --accent:#22c55e; --accent2:#7ee081; --warn:#ffbd5c; --bad:#ff6b6b; --grid:#2a2a32; --cell:#1f1f26; --cell-hover:#23232b; --cell-active:#333344; --tab-bg:#14141a; --zoom:1; --cell-size:24px; --cell-font:12px; }
+    @import url('https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.34.1/dist/tabler-icons.min.css');
+    /* ============================================================
+       Pi design language (forest-green, dark). Tokens adopted from
+       the redesign mockup. The original aliases (--bg/--panel/--muted
+       /--fg/--fg2/--accent/--accent2/--warn/--bad/--grid/--cell ...)
+       are kept and re-pointed at the Pi tokens so existing inline
+       styles and JS colour reads keep working.
+       ============================================================ */
+    :root {
+      /* Pi design SHAPES (14px cards, pills, layout) kept. COLOURS are the
+         editor's existing dark-neutral palette; only the ACCENT is the new
+         green (#9cc08f) from the redesign mockup. */
+      --page:#0f0f12; --card:#17171c; --ink:#e6e6e9; --textmuted:#b8b8c2; --hint:#8a8a93;
+      --line:#2a2a32; --accent:#9cc08f; --accent-soft:#1b271a;
+      --danger-bg:#2a1817; --danger-ink:#ff6b6b;
+      --info:#7cb3f0; --amber:#ffbd5c; --green:#9cc08f;
+      --radius:14px; --radius-sm:10px;
+      /* legacy aliases re-pointed */
+      --bg:#0f0f12; --panel:var(--card); --muted:var(--line); --fg:var(--ink); --fg2:var(--textmuted);
+      --accent2:#bfe0b3; --warn:var(--amber); --bad:var(--danger-ink);
+      --grid:#2a2a32; --cell:#1f1f26; --cell-hover:#23232b; --cell-active:#333344;
+      --tab-bg:#14141a;
+      --zoom:1; --cell-size:24px; --cell-font:12px;
+      /* selection = blue, axes = amber, dig overlay = teal (own hue) */
+      --sel:#7cb3f0; --axis:#ffbd5c; --dig:#5dcaa5;
+    }
+    /* Colourblind-safe palette (Okabe-Ito leaning) toggled on <body.cb-safe>.
+       Only re-tints the chrome accents/overlays; token cell colours come from
+       the Colors modal which the user can already adjust. */
+    body.cb-safe {
+      --accent:#56b4e9; --accent-soft:#0c2230; --green:#56b4e9;
+      --sel:#e69f00; --axis:#cc79a7; --dig:#009e73; --info:#56b4e9; --amber:#e69f00;
+    }
+    /* Text-size scale (a11y): set on <body> via data-text-size. */
+    body[data-text-size="large"] { --cell-font:13px; }
+    body[data-text-size="xlarge"] { --cell-font:15px; }
+    i.ti { font-style: normal; line-height: 1; }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Liberation Sans", sans-serif; background: var(--bg); color: var(--fg); }
-    header { padding: 12px 16px; border-bottom: 1px solid var(--muted); background: var(--panel); display: flex; align-items: center; gap: 12px; }
-    header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, ui-sans-serif, system-ui, Arial, sans-serif; background: var(--bg); color: var(--ink); line-height: 1.5; -webkit-font-smoothing: antialiased; display: flex; flex-direction: column; }
+    /* Thin top bar: app name + blueprint document tabs */
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 5px 12px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .topbar .app-name { font-weight: 600; font-size: 13px; color: var(--ink); }
+    .topbar .bp-tabs { display: flex; align-items: flex-end; gap: 2px; overflow: auto; flex: 0 1 auto; min-width: 0; max-width: 40%; }
+    .topbar .cmdk-pill { margin: 0 auto; display: inline-flex; align-items: center; gap: 8px; background: var(--page); border: 1px solid var(--line); border-radius: 8px; color: var(--hint); padding: 6px 12px; font-size: 12px; cursor: pointer; flex: 0 1 360px; min-width: 160px; justify-content: center; }
+    .topbar .cmdk-pill:hover { border-color: var(--accent); color: var(--textmuted); }
+    .topbar .cmdk-pill .kbd { border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 10px; font-family: ui-monospace, monospace; }
+    .topbar .bp-tab { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--line); border-bottom: none; border-radius: 7px 7px 0 0; background: transparent; color: var(--textmuted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+    .topbar .bp-tab:hover { color: var(--ink); }
+    .topbar .bp-tab.active { background: var(--accent-soft); color: var(--accent); border-color: var(--line); }
+    .topbar .bp-tab-add { background: transparent; border: 1px solid var(--line); border-radius: 6px; color: var(--textmuted); width: 26px; height: 26px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+    .topbar .bp-tab-add:hover { color: var(--accent); border-color: var(--accent); }
+    .topbar .bp-tab-add:disabled { opacity: .4; cursor: default; }
+    .topbar .bp-tab-add:disabled:hover { color: var(--textmuted); border-color: var(--line); }
+    /* Old toolbar retired into the top bar; kept in DOM (hidden, see .toolbar rule) for wiring/palette. */
+    .topbar .tb-divider { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .topbar .tbi { background: transparent; border: 1px solid var(--line); border-radius: 6px; color: var(--textmuted); width: 30px; height: 28px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 15px; }
+    .topbar .tbi:hover { color: var(--accent); border-color: var(--accent); }
+    .topbar .tbi.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+
+    /* ---- Visible focus rings (a11y) ---- */
+    :focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 8px; }
+    .pill { border-radius: 999px; }
+
+    /* ================= TOP BAR ================= */
+    header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--accent); color: var(--page); position: relative; }
+    header h1 { font-size: 15px; margin: 0; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; }
+    header .gsize { font-size: 11px; background: rgba(15,20,16,.16); border-radius: 999px; padding: 3px 9px; font-family: ui-monospace, monospace; }
     header .spacer { flex: 1; }
-    header .controls { display: flex; gap: 8px; align-items: center; position: relative; }
-    header input[type=number] { width: 84px; padding: 6px 8px; background: var(--cell); border: 1px solid var(--muted); color: var(--fg); border-radius: 6px; }
+    /* top-bar buttons: a soft variant on the accent bar, plus a primary export */
+    .tb-btn { font-size: 12px; display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 6px 12px; border: none; cursor: pointer; background: rgba(15,20,16,.12); color: var(--page); font-weight: 600; }
+    .tb-btn:hover { background: rgba(15,20,16,.2); }
+    .tb-btn.primary { background: var(--page); color: var(--accent); }
+    .tb-btn.primary:hover { background: #060906; }
+    #help-btn { width: 28px; height: 28px; border-radius: 999px; background: var(--page); color: var(--textmuted); display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); cursor: pointer; font-size: 15px; padding: 0; }
+    #help-btn:hover { border-color: var(--accent); color: var(--ink); }
+    /* Export dropdown menu */
+    .menu-wrap { position: relative; display: inline-block; }
+    .menu { position: absolute; right: 0; top: calc(100% + 6px); background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px; min-width: 220px; box-shadow: 0 12px 28px rgba(0,0,0,.45); z-index: 30; display: flex; flex-direction: column; gap: 2px; }
+    .menu button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; border: none; color: var(--ink); font-size: 12.5px; padding: 7px 10px; border-radius: 8px; cursor: pointer; }
+    .menu button:hover { background: var(--accent-soft); color: var(--accent); }
+    .menu .menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
+    .menu .menu-lbl { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--hint); padding: 6px 10px 2px; font-weight: 600; }
+    .menu .menu-opt { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; color: var(--ink); cursor: pointer; white-space: nowrap; }
+    .menu .menu-opt:hover { background: var(--line); }
+    .menu .menu-opt input { accent-color: var(--accent); margin: 0; }
+    .menu .menu-opt .menu-hint { color: var(--hint); font-size: 11px; margin-left: auto; }
+
+    /* ================= TOOLBAR (grouped clusters) ================= */
+    .toolbar { display: none; align-items: center; gap: 8px; padding: 9px 14px; background: var(--card); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .toolbar .lbl { font-size: 11px; letter-spacing: .08em; color: var(--hint); text-transform: uppercase; }
+    .toolbar .sep { width: 1px; height: 20px; background: var(--line); margin: 0 3px; }
+    .toolbar .grow { flex: 1; }
+    /* a compact control group (e.g. a stepper) */
+    .ctl { font-size: 12px; display: inline-flex; align-items: center; gap: 6px; color: var(--textmuted); background: var(--page); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 8px; }
+    .ctl.round { border-radius: 999px; }
+    .ctl input[type=number] { width: 44px; padding: 2px 4px; background: transparent; border: none; color: var(--ink); font-family: ui-monospace, monospace; text-align: center; }
+    .ctl .readout { min-width: 40px; text-align: center; font-family: ui-monospace, monospace; color: var(--ink); }
+    .ctl .stepbtn { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: none; color: var(--textmuted); cursor: pointer; border-radius: 6px; font-size: 15px; }
+    .ctl .stepbtn:hover { background: var(--accent-soft); color: var(--accent); }
+    /* generic pill button used in toolbar/sidebar/status */
+    .btn { font-size: 12px; display: inline-flex; align-items: center; gap: 6px; color: var(--textmuted); background: var(--page); border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; cursor: pointer; font-weight: 600; }
+    .btn:hover { border-color: var(--accent); color: var(--ink); }
+    .btn.active { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+    .btn.danger { background: var(--danger-bg); color: var(--danger-ink); border-color: transparent; }
+    .btn:disabled { opacity: .4; cursor: default; }
+    .btn:disabled:hover { border-color: var(--line); color: var(--textmuted); }
+    .toolbar .zhint { font-size: 11px; color: var(--hint); }
+
+    /* legacy <button> defaults map onto .btn look so any unconverted button still fits */
+    button.secondary { font-size: 12px; color: var(--textmuted); background: var(--page); border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; cursor: pointer; font-weight: 600; }
+    button.secondary:hover { border-color: var(--accent); color: var(--ink); }
+    button.active { background: var(--accent-soft) !important; color: var(--accent) !important; border-color: transparent !important; }
+
+    main { display: grid; grid-template-columns: 46px 1fr var(--sidebar-w, 300px); gap: 0; flex: 1 1 auto; min-height: 0; position: relative; }
+    main { grid-template-rows: 100%; }
+    .tool-rail { grid-column: 1; grid-row: 1; }
+    .workspace { grid-column: 2; grid-row: 1; min-width: 0; }
+    aside { grid-column: 3; grid-row: 1; }
+    /* Collapsible right panel */
+    main.panel-collapsed { grid-template-columns: 46px 1fr 0; }
+    main.panel-collapsed aside { display: none; }
+    #panel-toggle { position: absolute; top: 8px; right: calc(var(--sidebar-w, 300px) + 8px); z-index: 7; display: inline-flex; background: var(--card); border: 1px solid var(--line); border-radius: 6px; color: var(--textmuted); width: 28px; height: 26px; cursor: pointer; align-items: center; justify-content: center; }
+    #panel-toggle:hover { color: var(--accent); border-color: var(--accent); }
+    main.panel-collapsed #panel-toggle { right: 8px; }
+    /* Floating Import/Export/Help pill, bottom-right of the canvas */
+    #io-dock { position: absolute; bottom: 14px; right: calc(var(--sidebar-w, 300px) + 14px); z-index: 8; display: flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 5px 8px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+    main.panel-collapsed #io-dock { right: 14px; }
+    #io-dock .menu-wrap { display: inline-flex; }
+    #io-dock .tb-btn { background: transparent; color: var(--textmuted); border: 1px solid var(--line); font-weight: 600; }
+    #io-dock .tb-btn:hover { color: var(--accent); border-color: var(--accent); background: transparent; }
+    #io-dock .tb-btn.primary { background: var(--accent); color: #0f1a12; border: 1px solid var(--accent); }
+    #io-dock .tb-btn.primary:hover { background: var(--accent); color: #0f1a12; filter: brightness(1.08); }
+    #io-dock #help-btn { background: transparent; color: var(--textmuted); border: 1px solid var(--line); }
+    #io-dock #help-btn:hover { color: var(--accent); border-color: var(--accent); }
+    /* Left vertical icon tool rail (shape / mirror / brush) */
+    .tool-rail { background: var(--card); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; overflow: hidden; }
+    .tool-rail .rail-tool, .tool-rail .rail-toggle { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; border-radius: 8px; color: var(--textmuted); font-size: 17px; cursor: pointer; }
+    .tool-rail .rail-tool:hover, .tool-rail .rail-toggle:hover { background: var(--accent-soft); color: var(--accent); }
+    .tool-rail .rail-tool.active, .tool-rail .rail-toggle.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+    .tool-rail .rail-sep { width: 22px; height: 1px; background: var(--line); margin: 5px 0; }
+    .tool-rail .rail-brush { display: flex; flex-direction: column; align-items: center; gap: 2px; color: var(--textmuted); }
+    .tool-rail .railstep { width: 26px; height: 22px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid var(--line); border-radius: 6px; color: var(--textmuted); cursor: pointer; font-size: 13px; }
+    .tool-rail .railstep:hover { color: var(--accent); border-color: var(--accent); }
+    .tool-rail #rail-brush-val { font-size: 12px; font-family: var(--mono, ui-monospace, monospace); color: var(--ink); }
+    /* These controls now live in the rail; hide their old sidebar sections. */
+    #shape-tools, #mirror-tools { display: none; }
+    /* Z-levels (layers) panel */
+    .layers-btn { background: transparent; border: 1px solid var(--line); border-radius: 6px; color: var(--textmuted); width: 24px; height: 22px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; }
+    .layers-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .layers-list { display: flex; flex-direction: column; gap: 3px; }
+    .layer-row { display: flex; align-items: center; gap: 8px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--ink); }
+    .layer-row:hover { border-color: var(--accent); }
+    .layer-row.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+    .layer-row .lr-z { font-family: var(--mono, ui-monospace, monospace); }
+    .layer-row .lr-tag { margin-left: auto; font-size: 10px; color: var(--hint); text-transform: uppercase; letter-spacing: .05em; }
+
+    /* ================= SIDEBAR ================= */
+    aside { border-left: 1px solid var(--line); background: var(--card); overflow: auto; display: flex; flex-direction: column; position: relative; }
+    .tools { padding: 6px 0 14px; }
+    .section { margin-bottom: 6px; padding: 0 14px; }
+    .panel-h, .section h3 { margin: 0; font-size: 11px; font-weight: 600; color: var(--hint); text-transform: uppercase; letter-spacing: .08em; padding: 12px 0 8px; }
+    /* Collapsible sections (tools sidebar categories) */
+    .section.collapsible > h3 { cursor: pointer; position: relative; padding-left: 16px; user-select: none; }
+    .section.collapsible > h3::before {
+      content: '\25be';
+      position: absolute; left: 0; top: 0; bottom: 0; display: inline-flex; align-items: center; color: var(--hint);
+    }
+    .section.collapsible.collapsed > h3::before { content: '\25b8'; }
+    .section.collapsible.collapsed > :not(h3) { display: none; }
+    .tool-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 7px; }
+    /* tool/token cards are real <button>s */
+    .tool { background: var(--page); border: 1px solid var(--line); padding: 8px 9px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12.5px; text-align: center; color: var(--textmuted); font-family: inherit; line-height: 1.3; }
+    .tool:hover { border-color: var(--accent); color: var(--ink); }
+    .tool small { display: block; color: var(--hint); margin-top: 2px; font-size: 11px; }
+    .tool.active { background: var(--accent-soft); color: var(--ink); border-color: transparent; outline: 1px solid var(--accent); }
+    .tool.custom { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; text-align: left; }
+    .tool.custom input { padding: 7px 9px; background: var(--page); border: 1px solid var(--line); color: var(--ink); border-radius: 8px; font-family: inherit; }
+    .tool.custom button { background: var(--accent); color: var(--page); border: none; padding: 7px 11px; border-radius: 999px; cursor: pointer; font-weight: 600; }
+    .tool small.token-pill { display: inline-block; margin-top: 4px; padding: 2px 7px; border-radius: 999px; background: var(--line); color: var(--textmuted); font-family: ui-monospace, monospace; font-weight: 600; }
+    /* chip row (shape tools) */
+    .chip { font-size: 12px; display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 6px 11px; background: var(--page); border: 1px solid var(--line); color: var(--textmuted); cursor: pointer; font-family: inherit; }
+    .chip:hover { border-color: var(--accent); color: var(--ink); }
+    .chip.active { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+    /* CONTEXT PANEL: property forms for the active token live here */
+    .context-panel { margin-top: auto; }
+    .ctx-section { border-top: 1px solid var(--line); padding: 12px 14px; background: var(--card); }
+    .ctx-section .ch { font-size: 11px; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; margin: 0 0 10px; font-weight: 600; }
+    /* sidebar form controls */
+    aside select, aside input[type=text], aside input[type=number] {
+      padding: 5px 8px; background: var(--page); border: 1px solid var(--line); color: var(--ink); border-radius: 8px; font-family: inherit; font-size: 12px;
+    }
+    aside input[type=number] { width: 70px; }
+    aside label { font-size: 12px; color: var(--textmuted); display: inline-flex; align-items: center; gap: 5px; }
+    /* sidebar resize handle */
+    .sidebar-resizer { position: absolute; top: 0; left: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
+    .sidebar-resizer:hover { background: var(--accent-soft); }
+
     /* Hide native number spinners */
     input[type=number]::-webkit-outer-spin-button,
     input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     input[type=number] { -moz-appearance: textfield; appearance: textfield; }
-    header button { padding: 8px 10px; background: var(--accent); color: #021018; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
-    header button.secondary { background: var(--muted); color: var(--fg2); }
-    /* Make the help button prominent */
-    #help-btn {
-      background: var(--accent);
-      color: #06121a;
-      border: none;
-      font-weight: 800;
-      width: 32px; height: 32px; padding: 0;
-      border-radius: 999px;
-      display: inline-flex; align-items: center; justify-content: center;
-      box-shadow: 0 0 0 2px rgba(34,197,94,0.18);
+
+    /* Thin dark themed scrollbars (matches the app palette).
+       Chromium/Edge ignore ::-webkit-scrollbar when the standard scrollbar-*
+       props are set, so scope those to browsers without webkit support (Firefox). */
+    @supports not selector(::-webkit-scrollbar) {
+      * { scrollbar-width: thin; scrollbar-color: #4a4a57 transparent; }
     }
-    #help-btn:hover { box-shadow: 0 0 0 3px rgba(34,197,94,0.28); transform: translateY(-0.5px); }
-    #help-btn:active { transform: translateY(0); }
-    /* Visual toggle for header/status buttons in active mode */
-    button.active { outline: 2px solid var(--accent); background: #13232d; color: var(--accent2); }
-    main { display: grid; grid-template-columns: 280px 1fr; gap: 0; height: calc(100% - 54px); }
-    aside { border-right: 1px solid var(--muted); background: var(--panel); overflow: auto; }
-    .tools { padding: 12px; }
-    .section { margin-bottom: 16px; }
-    .section h3 { margin: 10px 0 8px; font-size: 13px; font-weight: 700; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.06em; }
-    /* Collapsible sections (tools sidebar categories) */
-    .section.collapsible > h3 { cursor: pointer; position: relative; padding-left: 16px; user-select: none; }
-    .section.collapsible > h3::before {
-      content: '▾';
-      position: absolute; left: 0; top: 0; bottom: 0; display: inline-flex; align-items: center; color: var(--fg2);
-    }
-    .section.collapsible.collapsed > h3::before { content: '▸'; }
-    .section.collapsible.collapsed > :not(h3) { display: none; }
-    .tool-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 6px; }
-    .tool { background: var(--cell); border: 1px solid var(--muted); padding: 8px; border-radius: 8px; cursor: pointer; font-size: 13px; text-align: center; color: var(--fg); }
-    .tool small { display: block; color: var(--fg2); margin-top: 2px; font-size: 11px; }
-    .tool.active { outline: 2px solid var(--accent); background: #13232d; }
-    .tool.custom { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }
-    .tool.custom input { padding: 8px; background: var(--cell); border: 1px solid var(--muted); color: var(--fg); border-radius: 8px; }
-    .tool.custom button { background: var(--accent2); color: #07200d; border: none; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-weight: 700; }
-    .tool small.token-pill { display: inline-block; margin-top: 4px; padding: 2px 6px; border-radius: 999px; background: var(--muted); color: var(--fg2); }
-    .tabs { display: flex; background: var(--tab-bg); border-bottom: 1px solid var(--muted); }
-    .tabs button { flex: 0 0 auto; background: transparent; border: none; padding: 10px 14px; color: var(--fg2); cursor: pointer; font-weight: 600; border-bottom: 2px solid transparent; }
-    .tabs button.active { color: var(--fg); border-bottom: 2px solid var(--accent); }
-    .workspace { display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
-    .gridwrap { overflow: auto; background: #0e0e13; padding: 12px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
+    ::-webkit-scrollbar { width: 12px; height: 12px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #4a4a57; border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+    ::-webkit-scrollbar-corner { background: transparent; }
+
+    /* ================= BLUEPRINT BAR ================= */
+    .menu-wrap.up .menu { top: auto; bottom: calc(100% + 6px); }
+    .menu-wrap.up .popover { top: auto; bottom: calc(100% + 8px); }
+
+    /* ================= TABS (pill nav) ================= */
+    .tabs { display: flex; gap: 7px; padding: 12px 14px 5px; background: var(--card); border-bottom: 1px solid var(--line); overflow-x: auto; }
+    .tabs button { flex: 0 0 auto; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px; background: var(--page); border: 1px solid var(--line); color: var(--textmuted); white-space: nowrap; cursor: pointer; font-weight: 600; }
+    .tabs button:hover { border-color: var(--accent); color: var(--ink); }
+    .tabs button.active { background: var(--accent); border-color: var(--accent); color: var(--page); }
+
+    /* ================= WORKSPACE / CANVAS ================= */
+    .workspace { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+    .gridwrap { flex: 1; min-height: 0; overflow: auto; background: var(--page); padding: 18px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; position: relative; }
     .grid-container { position: relative; display: inline-block; }
     table.grid { border-collapse: collapse; background: var(--grid); table-layout: fixed; }
-    table.grid td { width: calc(var(--cell-size) * var(--zoom)); height: calc(var(--cell-size) * var(--zoom)); line-height: calc(var(--cell-size) * var(--zoom)); text-align: center; vertical-align: middle; white-space: nowrap; overflow: hidden; background: var(--cell); color: var(--fg); border: 1px solid #1a1a21; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: calc(var(--cell-font) * var(--zoom)); user-select: none; position: relative; }
+    table.grid td { width: calc(var(--cell-size) * var(--zoom)); height: calc(var(--cell-size) * var(--zoom)); line-height: calc(var(--cell-size) * var(--zoom)); text-align: center; vertical-align: middle; white-space: nowrap; overflow: hidden; background: var(--cell); color: var(--fg); border: 1px solid var(--grid); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: calc(var(--cell-font) * var(--zoom)); font-weight: 600; user-select: none; position: relative; }
     /* Slightly smaller text for property-heavy tokens (display-only) */
     table.grid td.mini-token { font-size: calc(var(--cell-font) * var(--zoom) * 0.85) !important; }
     table.grid td:hover { background: var(--cell-hover); }
     table.grid td.active { background: var(--cell-active); }
-    /* Persistent selection overlay */
+    /* Persistent selection overlay -> BLUE */
     table.grid td.selected::after { content: ""; position: absolute; inset: 0; box-sizing: border-box;
-      border: 2px solid #22c55e; /* accent */
-      background: rgba(34,197,94,0.10);
+      border: 2px solid var(--sel);
+      background: rgba(124,179,240,0.14);
       pointer-events: none; z-index: 3; }
     /* Mode cursors */
     .grid-container.select-mode table.grid td { cursor: crosshair; }
     .grid-container.paste-mode table.grid td { cursor: copy; }
-    .statusbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-top: 1px solid var(--muted); background: var(--panel); color: var(--fg2); font-size: 12px; }
-    .statusbar .actions { display: flex; gap: 8px; }
-    .statusbar .actions button { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--muted); background: var(--cell); color: var(--fg); cursor: pointer; }
-    .statusbar .actions button.primary { background: var(--accent); color: #06121a; border: none; font-weight: 700; }
-    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; padding: 2px 6px; border: 1px solid var(--muted); border-bottom-width: 2px; border-radius: 6px; background: var(--cell); color: var(--fg2); }
-    .note { color: var(--fg2); font-size: 12px; }
+
+    /* Floating selection toolbar (over an active selection) */
+    .sel-toolbar { position: absolute; display: flex; gap: 5px; background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 5px 7px; z-index: 8; box-shadow: 0 8px 20px rgba(0,0,0,.4); }
+    .sel-toolbar button { font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px; color: var(--textmuted); background: transparent; border: none; padding: 3px 9px; border-radius: 999px; cursor: pointer; font-weight: 600; }
+    .sel-toolbar button:hover { background: var(--accent-soft); color: var(--accent); }
+
+    /* ================= STATUS BAR (status only) ================= */
+    .statusbar { display: flex; align-items: center; gap: 9px; padding: 9px 14px; border-top: 1px solid var(--line); background: var(--card); color: var(--textmuted); font-size: 12px; flex-wrap: wrap; }
+    .statusbar .grow { flex: 1; }
+    .stat { font-size: 12px; display: inline-flex; align-items: center; gap: 7px; background: var(--page); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; color: var(--ink); }
+    .stat.muted { color: var(--textmuted); }
+    .stat .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+    .statusbar .hint { font-size: 12px; color: var(--hint); }
+    .statusbar .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .statusbar .actions button { font-size: 12px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line); background: var(--page); color: var(--textmuted); cursor: pointer; font-weight: 600; }
+    .statusbar .actions button:hover { border-color: var(--accent); color: var(--ink); }
+    .statusbar .actions button:disabled { opacity: .4; cursor: default; }
+    .statusbar .actions button:disabled:hover { border-color: var(--line); color: var(--textmuted); }
+    .statusbar .actions button.primary { background: var(--accent); color: var(--page); border: none; }
+    .statusbar .actions select { font-size: 12px; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--page); color: var(--ink); font-family: inherit; }
+    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--page); color: var(--ink); }
+    .note { color: var(--textmuted); font-size: 12px; }
     /* Preview styling */
     .preview { opacity: 0.55; pointer-events: none; filter: saturate(85%); }
     .preview table.grid td { /* static 80% of main grid size */
@@ -94,30 +289,76 @@
     /* South (below) preview should take full row width */
     .preview.south { flex: 1 0 100%; width: 100%; display: flex; }
     /* Dig overlay: subtle crosshatch fill + dashed green border */
-    .dig-overlay { position: absolute; inset: 0; box-sizing: border-box; border: 1px dashed #22c55e; background-image:
-        repeating-linear-gradient(45deg, rgba(34,197,94,0.15) 0 8px, transparent 8px 16px),
-        repeating-linear-gradient(-45deg, rgba(34,197,94,0.10) 0 8px, transparent 8px 16px);
+    /* Dig overlay: own hue (teal) so it does not compete with the green accent */
+    .dig-overlay { position: absolute; inset: 0; box-sizing: border-box; border: 1px dashed var(--dig); background-image:
+        repeating-linear-gradient(45deg, rgba(93,202,165,0.15) 0 8px, transparent 8px 16px),
+        repeating-linear-gradient(-45deg, rgba(93,202,165,0.10) 0 8px, transparent 8px 16px);
       pointer-events: none; z-index: 1; }
-    /* Mirror axes overlay */
+    /* Mirror axes overlay -> AMBER */
     .axes-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 5; }
-    .axis-line { position: absolute; background: var(--accent); opacity: 0.7; }
+    .axis-line { position: absolute; background: var(--axis); opacity: 0.85; }
     .axis-line.v { width: 2px; top: 0; bottom: 0; }
     .axis-line.h { height: 2px; left: 0; right: 0; }
     .axis-handle { position: absolute; pointer-events: auto; }
     .axis-handle.v { width: 14px; top: 0; bottom: 0; cursor: col-resize; transform: translateX(-50%); }
     .axis-handle.h { height: 14px; left: 0; right: 0; cursor: row-resize; transform: translateY(-50%); }
-    .axis-handle .grip { position: absolute; background: var(--accent); opacity: 0.85; }
+    .axis-handle .grip { position: absolute; background: var(--axis); opacity: 0.9; }
     .axis-handle.v .grip { width: 2px; top: 0; bottom: 0; left: 50%; transform: translateX(-50%); }
     .axis-handle.h .grip { height: 2px; left: 0; right: 0; top: 50%; transform: translateY(-50%); }
     /* Shape preview overlay: distinct purple tone above dig overlay */
     table.grid td.shape-preview::after { content: ""; position: absolute; inset: 0; box-sizing: border-box;
-      border: 2px dashed #7c3aed; background-image:
-        repeating-linear-gradient(45deg, rgba(124,58,237,0.20) 0 6px, transparent 6px 12px);
-      background-color: rgba(124,58,237,0.12); pointer-events: none; z-index: 2; }
+      border: 2px dashed #a99cd0; background-image:
+        repeating-linear-gradient(45deg, rgba(169,156,208,0.22) 0 6px, transparent 6px 12px);
+      background-color: rgba(169,156,208,0.14); pointer-events: none; z-index: 2; }
     .hidden { display: none; }
-    .hint { color: var(--warn); }
-    .row { display: flex; gap: 8px; align-items: center; }
-    .row input[type=text] { flex: 1; padding: 8px; background: var(--cell); border: 1px solid var(--muted); color: var(--fg); border-radius: 8px; }
+    .hint { color: var(--amber); }
+    /* ================= LEGEND (floating, collapsible panel over canvas) ================= */
+    .legend { position: absolute; right: 16px; top: 16px; width: 196px; background: var(--card);
+      border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; z-index: 7;
+      font-size: 12px; color: var(--textmuted); box-shadow: 0 10px 28px rgba(0,0,0,.4); }
+    .legend .lh { font-size: 11px; letter-spacing: .07em; color: var(--hint); text-transform: uppercase;
+      padding: 9px 13px; border-bottom: 1px solid var(--line); font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
+    .legend .lh button { background: transparent; border: none; color: var(--hint); cursor: pointer; font-size: 14px; padding: 0; line-height: 1; }
+    .legend .lh button:hover { color: var(--accent); }
+    .legend .legend-body { padding: 4px 0 6px; max-height: 320px; overflow: auto; }
+    .legend.collapsed .legend-body { display: none; }
+    .legend .legend-item { display: flex; align-items: center; gap: 9px; padding: 4px 13px; }
+    .legend .swatch { width: 13px; height: 13px; border-radius: 4px; border: 1px solid #00000044; flex: 0 0 auto; }
+    /* Picture view: hide glyphs so the grid reads as a pure colour map */
+    body.picture-view table.grid td { color: transparent !important; }
+    body.picture-view table.grid td.selected::after { /* keep selection visible */ }
+    /* Colour customization modal: edit the token -> colour palette (single source of truth) */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow: auto; }
+    /* Command palette (Ctrl K) */
+    #cmdk { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 60; display: none; align-items: flex-start; justify-content: center; padding-top: 12vh; }
+    #cmdk.open { display: flex; }
+    #cmdk .cmdk-box { width: min(560px, 92vw); background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 16px 40px rgba(0,0,0,.5); overflow: hidden; }
+    #cmdk input { width: 100%; box-sizing: border-box; background: transparent; border: none; border-bottom: 1px solid var(--line); color: var(--ink); font-size: 15px; padding: 14px 16px; outline: none; }
+    #cmdk .cmdk-list { max-height: 50vh; overflow: auto; padding: 6px; }
+    #cmdk .cmdk-item { padding: 9px 12px; border-radius: 8px; font-size: 13px; color: var(--ink); cursor: pointer; display: flex; align-items: center; gap: 8px; }
+    #cmdk .cmdk-item .ci-hint { margin-left: auto; color: var(--hint); font-size: 11px; }
+    #cmdk .cmdk-item.sel, #cmdk .cmdk-item:hover { background: var(--accent-soft); color: var(--accent); }
+    #cmdk .cmdk-empty { padding: 14px 16px; color: var(--hint); font-size: 13px; }
+    .modal-backdrop.hidden { display: none; }
+    .modal { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); width: min(760px, 100%); box-shadow: 0 16px 40px rgba(0,0,0,0.5); }
+    .modal header { border-bottom: 1px solid var(--line); background: var(--card); color: var(--ink); }
+    .modal h2 { font-size: 16px; margin: 0; font-weight: 700; }
+    .modal .modal-body { padding: 14px 16px; max-height: 60vh; overflow: auto; }
+    .modal .modal-foot { display: flex; gap: 8px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--line); }
+    .modal .modal-foot .spacer { flex: 1; }
+    .modal .modal-foot button { font-size: 12px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--page); color: var(--textmuted); cursor: pointer; font-weight: 600; }
+    .modal .modal-foot button:hover { border-color: var(--accent); color: var(--ink); }
+    .modal .modal-foot button.primary { background: var(--accent); color: var(--page); border: none; }
+    .modal header button { font-size: 12px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--page); color: var(--textmuted); cursor: pointer; font-weight: 600; }
+    .color-group { margin-bottom: 16px; }
+    .color-group h3 { margin: 4px 0 8px; font-size: 12px; font-weight: 700; color: var(--textmuted); text-transform: uppercase; letter-spacing: 0.06em; }
+    .color-rows { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 12px; }
+    .color-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink); }
+    .color-row input[type=color] { width: 34px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--page); cursor: pointer; }
+    .color-row .clab { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .color-row .creset { background: var(--line); color: var(--textmuted); border: none; border-radius: 999px; padding: 2px 8px; cursor: pointer; font-size: 11px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .row input[type=text] { flex: 1; padding: 7px 9px; background: var(--page); border: 1px solid var(--line); color: var(--ink); border-radius: 8px; font-family: inherit; font-size: 12px; }
     /* Paste hover preview overlay using a real element to render token text */
     table.grid td.paste-preview { position: relative; }
     table.grid td .paste-ghost { position: absolute; inset: 0; box-sizing: border-box; pointer-events: none; z-index: 4;
@@ -127,10 +368,10 @@
       position: absolute;
       right: 0;
       top: calc(100% + 8px);
-      background: var(--panel);
-      color: var(--fg2);
-      border: 1px solid var(--muted);
-      border-radius: 10px;
+      background: var(--card);
+      color: var(--textmuted);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
       padding: 12px 14px;
       font-size: 12.5px;
       line-height: 1.45;
@@ -138,90 +379,101 @@
       max-width: min(460px, calc(100vw - 32px));
       max-height: min(60vh, 520px);
       overflow: auto;
-      box-shadow: 0 12px 24px rgba(0,0,0,0.35);
-      z-index: 10;
+      box-shadow: 0 12px 24px rgba(0,0,0,0.4);
+      z-index: 40;
     }
-    .popover strong { color: var(--fg); display: block; margin: 6px 0 4px; font-weight: 700; }
+    .popover strong { color: var(--ink); display: block; margin: 6px 0 4px; font-weight: 700; }
     .popover strong:first-child { margin-top: 0; }
-    .statusbar .actions .sep { display: inline-block; width: 1px; height: 24px; background: var(--muted); margin: 0 10px; vertical-align: middle; }
+    .statusbar .actions .sep { display: inline-block; width: 1px; height: 20px; background: var(--line); margin: 0 6px; vertical-align: middle; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Quickfort Grid Editor</h1>
-    <div class="spacer"></div>
-    <div class="controls">
-      <label>Columns <input id="cols" type="number" min="1" max="300" value="30" /></label>
-      <button id="cols-dec" class="secondary" title="Decrease columns">-</button>
-      <button id="cols-inc" title="Increase columns">+</button>
-      <label>Rows <input id="rows" type="number" min="1" max="300" value="20" /></label>
-      <button id="rows-dec" class="secondary" title="Decrease rows">-</button>
-      <button id="rows-inc" title="Increase rows">+</button>
-      <div class="row" style="align-items:center; gap:6px;">
-        <span id="zoom-label" class="note" style="min-width:56px; display:inline-block; text-align:center;">100%</span>
-        <button id="zoom-out" class="secondary" title="Zoom out (Ctrl+-)">-</button>
-        <button id="zoom-in" title="Zoom in (Ctrl+=)">+</button>
-      </div>
-      <div class="row" style="align-items:center; gap:6px; margin-left:6px;">
-        <span id="z-label" class="note" style="min-width:56px; display:inline-block; text-align:center;">Z0</span>
-        <button id="z-down" class="secondary" title="Down one z-level">Z+</button>
-        <button id="z-up" title="Up one z-level">Z-</button>
-        <button id="z-add" class="secondary" title="Add a new top Z-level">Add Z</button>
-        <button id="z-del" class="secondary" title="Delete current Z-level (if more than one)">Del Z</button>
-      </div>
-      <button id="preview-toggle-btn" class="secondary" title="Toggle preview panels">Preview</button>
-      <button id="syntax-toggle" class="secondary" title="Toggle cell text: color-only vs full">Full Syntax</button>
-      <button id="trim-empty-z-btn" class="secondary" title="Remove empty Z-levels at top/bottom (current view)">Trim Z</button>
-      <button id="cleargrid" class="secondary">Clear Current Grid</button>
-      <button id="help-btn" class="secondary" title="Usage help" aria-label="Help">?</button>
-      <div id="help-pop" class="popover hidden">
-        <strong>Basics</strong><br>
-        Left-click paints the active tool, right-click erases. Drag to paint across multiple cells.
-        Grid size, zoom, and Z-level are controlled in the top bar.<br><br>
+  <!-- Top bar: app name, blueprint tabs + management, centered command-palette
+       search, and the grid size / zoom / view controls. -->
+  <div class="topbar">
+    <span class="app-name">Fort</span>
+    <div class="bp-tabs" id="bp-tabs" role="tablist" aria-label="Blueprints"></div>
+    <button class="bp-tab-add" id="bp-tab-add" type="button" title="Add a new blueprint" aria-label="Add blueprint"><i class="ti ti-plus"></i></button>
+    <button class="bp-tab-add" id="bp-tab-dup" type="button" title="Duplicate the active blueprint" aria-label="Duplicate blueprint"><i class="ti ti-copy"></i></button>
+    <button class="bp-tab-add" id="bp-tab-rename" type="button" title="Rename the active blueprint" aria-label="Rename blueprint"><i class="ti ti-pencil"></i></button>
+    <button class="bp-tab-add" id="bp-tab-del" type="button" title="Delete the active blueprint" aria-label="Delete blueprint"><i class="ti ti-trash"></i></button>
+    <button class="cmdk-pill" id="cmdk-pill" type="button" title="Search all commands"><i class="ti ti-search"></i> Search actions <span class="kbd">Ctrl K</span></button>
+    <span class="tb-divider"></span>
+    <span class="ctl" title="Columns">
+      <button id="cols-dec" class="stepbtn" type="button" title="Decrease columns" aria-label="Decrease columns"><i class="ti ti-minus"></i></button>
+      <input id="cols" type="number" min="1" max="300" value="30" aria-label="Columns" />
+      <button id="cols-inc" class="stepbtn" type="button" title="Increase columns" aria-label="Increase columns"><i class="ti ti-plus"></i></button>
+    </span>
+    <span class="ctl" title="Rows">
+      <button id="rows-dec" class="stepbtn" type="button" title="Decrease rows" aria-label="Decrease rows"><i class="ti ti-minus"></i></button>
+      <input id="rows" type="number" min="1" max="300" value="20" aria-label="Rows" />
+      <button id="rows-inc" class="stepbtn" type="button" title="Increase rows" aria-label="Increase rows"><i class="ti ti-plus"></i></button>
+    </span>
+    <span class="ctl mono" title="Zoom">
+      <button id="zoom-out" class="stepbtn" type="button" title="Zoom out (Ctrl+-)" aria-label="Zoom out"><i class="ti ti-minus"></i></button>
+      <span id="zoom-label" class="readout">100%</span>
+      <button id="zoom-in" class="stepbtn" type="button" title="Zoom in (Ctrl+=)" aria-label="Zoom in"><i class="ti ti-plus"></i></button>
+    </span>
+    <span class="tb-divider"></span>
+    <button id="preview-toggle-btn" class="tbi" type="button" title="Toggle preview panels" aria-label="Toggle preview"><i class="ti ti-eye"></i></button>
+    <button id="picture-toggle" class="tbi" type="button" title="Color only: hide glyphs, show pure colour fills" aria-label="Color only"><i class="ti ti-photo"></i></button>
+    <button id="legend-toggle" class="tbi" type="button" title="Show/hide the colour legend" aria-label="Legend"><i class="ti ti-list"></i></button>
+    <button id="colors-btn" class="tbi" type="button" title="Customize token colours" aria-label="Colors"><i class="ti ti-palette"></i></button>
+  </div>
 
-        <strong>Shapes & brush</strong><br>
-        Use the Shape dropdown (Freehand / Rect / Line / Circle / Fill) plus the Brush size
-        to control how you paint. "Hollow" draws only outlines for Rect/Circle.<br><br>
+  <!-- Hidden at runtime (.toolbar { display:none }). Retained so the Layers panel
+       and the Ctrl-K command palette can drive its z-level / Trim Z / Clear controls. -->
+  <div class="toolbar" role="toolbar" aria-label="Editor toolbar">
+    <span class="lbl">Levels</span>
+    <span class="ctl" title="Z-level (or scroll the wheel over the grid)">
+      <button id="z-up" class="stepbtn" type="button" title="Up one z-level" aria-label="Up one z-level"><i class="ti ti-chevron-up"></i></button>
+      <span id="z-label" class="readout">Z0</span>
+      <button id="z-down" class="stepbtn" type="button" title="Down one z-level" aria-label="Down one z-level"><i class="ti ti-chevron-down"></i></button>
+    </span>
+    <button id="z-add" class="btn" type="button" title="Add a new top Z-level"><i class="ti ti-plus"></i>add</button>
+    <button id="z-del" class="btn" type="button" title="Delete current Z-level (if more than one)"><i class="ti ti-minus"></i>del</button>
+    <button id="trim-empty-z-btn" class="btn" type="button" title="Remove empty Z-levels at top/bottom (current view)"><i class="ti ti-scissors"></i>Trim Z</button>
+    <span id="z-count" class="zhint"></span>
+    <span class="grow"></span>
+    <button id="cleargrid" class="btn danger" type="button" title="Clear the current grid"><i class="ti ti-trash"></i>Clear grid</button>
+  </div>
 
-        <strong>Mirror & axes</strong><br>
-        Mirror V / H paints symmetrically across the green axes. Drag the axis handles in the
-        grid to move the mirror lines.<br><br>
-
-        <strong>Z-levels & dig overlay</strong><br>
-        Z+ / Z− switch floors and extend when you go past the top/bottom. Scrolling over the grid only navigates within existing Z-levels (no auto-add). The "Preview"
-        button shows the next Z-level as a faded overlay to help align towers, stair stacks,
-        etc. Dig designations from the #dig tab are shown as a green overlay on the other tabs
-        for alignment.<br><br>
-
-        <strong>Selection, paste & transforms</strong><br>
-        "Select Area" → drag to mark a rectangle. Use Copy / Cut / Paste / Clear in the
-        status bar. In Paste mode you get a ghost preview under the cursor; right-click or Esc
-        cancels. "Skip blanks" avoids overwriting non-empty cells. Rotate / Mirror X / Mirror Y
-        transform the paste buffer before placing.<br><br>
-
-        <strong>CSV / Quickfort I/O</strong><br>
-        "Copy to clipboard" copies the current tab as multi-Z quickfort CSV. "Download CSV"
-        saves the current tab, "Export All" bundles all tabs into one file, "Load" imports
-        quickfort CSV (multi-tab, multi-Z supported).<br><br>
-
-        <strong>Undo & keyboard shortcuts</strong><br>
-        Undo / Redo step through your changes.<br>
-        Ctrl/Cmd+Z / Ctrl/Cmd+Y (or Ctrl/Cmd+Shift+Z) – undo/redo<br>
-        Ctrl/Cmd + + / − / 0 – zoom in/out/reset<br>
-        Ctrl/Cmd+C – copy current selection<br>
-        Ctrl/Cmd+V – toggle paste mode<br>
-        Esc – clear selection or exit paste mode
-      </div>
-    </div>
-  </header>
   <main>
+    <nav class="tool-rail" aria-label="Drawing tools">
+      <button class="rail-tool" id="rail-select" type="button" title="Select area (marquee)"><i class="ti ti-pointer"></i></button>
+      <span class="rail-sep"></span>
+      <button class="rail-tool" data-shape="free" type="button" title="Freehand"><i class="ti ti-pencil"></i></button>
+      <button class="rail-tool" data-shape="rect" type="button" title="Rectangle"><i class="ti ti-square"></i></button>
+      <button class="rail-tool" data-shape="line" type="button" title="Line"><i class="ti ti-line"></i></button>
+      <button class="rail-tool" data-shape="circle" type="button" title="Circle"><i class="ti ti-circle"></i></button>
+      <button class="rail-tool" data-shape="fill" type="button" title="Fill"><i class="ti ti-bucket-droplet"></i></button>
+      <span class="rail-sep"></span>
+      <button id="rail-hollow" class="rail-toggle" type="button" title="Hollow outline (rect / circle)"><i class="ti ti-box"></i></button>
+      <button id="rail-mv" class="rail-toggle" type="button" title="Mirror across vertical axis"><i class="ti ti-flip-vertical"></i></button>
+      <button id="rail-mh" class="rail-toggle" type="button" title="Mirror across horizontal axis"><i class="ti ti-flip-horizontal"></i></button>
+      <span class="rail-sep"></span>
+      <div class="rail-brush" title="Brush size">
+        <button id="rail-brush-inc" class="railstep" type="button" aria-label="Increase brush"><i class="ti ti-plus"></i></button>
+        <span id="rail-brush-val">1</span>
+        <button id="rail-brush-dec" class="railstep" type="button" aria-label="Decrease brush"><i class="ti ti-minus"></i></button>
+      </div>
+    </nav>
     <aside>
       <div class="tools">
+        <div class="section" id="layers-section">
+          <h3 style="display:flex; align-items:center;">Z-levels
+            <span style="margin-left:auto; display:inline-flex; gap:4px;">
+              <button id="layers-add" class="layers-btn" type="button" title="Add a Z-level on top" aria-label="Add Z-level"><i class="ti ti-plus"></i></button>
+              <button id="layers-del" class="layers-btn" type="button" title="Delete the current Z-level" aria-label="Delete Z-level"><i class="ti ti-minus"></i></button>
+            </span>
+          </h3>
+          <div id="layers-list" class="layers-list"></div>
+        </div>
         <div class="section" id="shape-tools">
-          <h3>Shape Tools</h3>
-          <div class="row" style="gap:6px; align-items:center; flex-wrap:wrap;">
+          <h3>Shape tools</h3>
+          <div class="row">
             <label>Shape
-              <select id="shape-select" style="margin-left:6px; padding:4px 6px; background: var(--cell); border:1px solid var(--muted); color: var(--fg); border-radius:6px;">
+              <select id="shape-select">
                 <option value="free">Freehand</option>
                 <option value="rect">Rect</option>
                 <option value="line">Line</option>
@@ -231,29 +483,37 @@
             </label>
             <label id="shape-outline-wrap"><input id="shape-outline" type="checkbox" /> Hollow</label>
           </div>
-          <div class="row" style="gap:6px; align-items:center; flex-wrap:wrap; margin-top:6px;">
-            <label>Brush <input id="brush-size" type="number" min="1" max="25" value="1" /></label>
-            <button id="brush-dec" class="secondary" title="Decrease brush">-</button>
-            <button id="brush-inc" title="Increase brush">+</button>
+          <div class="row" style="margin-top:8px;">
+            <label>Brush
+              <span class="ctl" style="margin-left:6px;">
+                <button id="brush-dec" class="stepbtn" type="button" title="Decrease brush" aria-label="Decrease brush"><i class="ti ti-minus"></i></button>
+                <input id="brush-size" type="number" min="1" max="25" value="1" aria-label="Brush size" />
+                <button id="brush-inc" class="stepbtn" type="button" title="Increase brush" aria-label="Increase brush"><i class="ti ti-plus"></i></button>
+              </span>
+            </label>
           </div>
+          <div class="note" style="margin-top:8px;"><i class="ti ti-eraser" style="vertical-align:-2px;"></i> Right-click any cell to erase.</div>
         </div>
-        <div class="section" id="mirror-tools" style="margin-top:6px;">
-          <h3>Mirror Axes</h3>
-          <div class="row" style="gap:12px; align-items:center; flex-wrap:wrap;">
+        <div class="section" id="mirror-tools">
+          <h3>Mirror axes</h3>
+          <div class="row" style="gap:14px;">
             <label title="Mirror across vertical axis"><input id="mirror-v-toggle" type="checkbox" /> Mirror V</label>
             <label title="Mirror across horizontal axis"><input id="mirror-h-toggle" type="checkbox" /> Mirror H</label>
           </div>
+          <div class="note" style="margin-top:8px;">Drag the amber axis handles on the grid to move the mirror lines.</div>
         </div>
 
 
         <div class="section" data-tools="dig">
-          <h3>Dig Tools</h3>
-          <div class="row" style="margin:6px 0 10px; gap:12px; align-items:center;">
+          <h3>Dig tokens</h3>
+          <div class="ctx-section" style="border-top:none; padding:0 0 10px;">
+            <div class="ch">Dig options</div>
+            <div class="row" style="gap:12px;">
             <label><input type="checkbox" id="dig-mb"> Blueprint</label>
             <label><input type="checkbox" id="dig-mw"> Warm</label>
             <label><input type="checkbox" id="dig-md"> Damp</label>
             <label>Priority
-              <select id="dig-priority" style="margin-left:6px; padding:4px 6px; background: var(--cell); border:1px solid var(--muted); color: var(--fg); border-radius:6px;">
+              <select id="dig-priority">
                 <option value="">none</option>
                 <option value="1">1</option>
                 <option value="2">2</option>
@@ -264,15 +524,16 @@
                 <option value="7">7</option>
               </select>
             </label>
+            </div>
           </div>
-          <div class="section" style="margin:0 0 8px;">
+          <div class="section" style="padding:0; margin:0 0 8px;">
             <div class="tool-grid" id="dig-basic"></div>
           </div>
-          <div class="section" style="margin:0 0 8px;">
-            <h3>Item/Traffic</h3>
+          <div class="section" style="padding:0; margin:0 0 8px;">
+            <h3>Item / Traffic</h3>
             <div class="tool-grid" id="dig-flags"></div>
           </div>
-          <div class="section" style="margin:0 0 8px;">
+          <div class="section" style="padding:0; margin:0 0 8px;">
             <h3>Tracks (carved)</h3>
             <div class="tool-grid" id="dig-tracks"></div>
           </div>
@@ -283,7 +544,7 @@
         </div>
 
         <div class="section" data-tools="build">
-          <h3>Build Tools</h3>
+          <h3>Build tokens</h3>
           <div class="row" style="margin-bottom:8px;">
             <input id="build-search" type="text" placeholder="Search (e.g., 'bed', 'wc', 'trackstopN')" />
           </div>
@@ -296,19 +557,21 @@
         </div>
 
         <div class="section" data-tools="place">
-          <h3>Stockpiles (#place)</h3>
+          <h3>Stockpile tokens</h3>
           <div class="tool-grid" id="place-stockpiles"></div>
 
-          <div class="section" data-tools="place" style="margin-top:8px;">
+          <div class="section" data-tools="place" style="padding:0; margin-top:10px;">
             <h3>Multi-type stockpile</h3>
             <div id="place-multi-checks" class="tool-grid"></div>
             <div class="row" style="margin-top:8px;">
-              <button id="place-multi-apply">Use selected types</button>
+              <button id="place-multi-apply" class="btn">Use selected types</button>
             </div>
-            <div class="note">Build combined stockpiles like yr (corpses + refuse).</div>
+            <div class="note" style="margin-top:6px;">Build combined stockpiles like yr (corpses + refuse).</div>
           </div>
 
-          <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+          <div class="ctx-section" style="margin:12px -14px 0;">
+          <div class="ch">Stockpile options</div>
+          <div class="row" style="gap:8px;">
             <input id="place-name" type="text" placeholder="name (e.g. Seeds)" />
             <input id="place-take-from" type="text" placeholder="take_from (comma-separated stockpile names)" />
             <input id="place-give-to" type="text" placeholder="give_to (comma-separated stockpile names)" />
@@ -343,12 +606,15 @@
           </div>
 
           <div class="note">Structured fields build properties like {name=..., barrels=..., links_only=true}. Extra props are appended as-is. :=configuration is appended after properties.</div>
+          </div>
         </div>
 
         <div class="section" data-tools="zone">
-          <h3>Zones</h3>
+          <h3>Zone tokens</h3>
           <div class="tool-grid" id="zone-types"></div>
-          <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+          <div class="ctx-section" style="margin:12px -14px 0;">
+          <div class="ch">Zone options</div>
+          <div class="row" style="gap:8px;">
             <input id="zone-name" type="text" placeholder="name (e.g. Dining)" />
             <select id="zone-location">
               <option value="">location (none)</option>
@@ -366,12 +632,15 @@
             <input id="zone-props" type="text" placeholder="extra props, e.g. desired_goblets=20 desired_suture=10" />
           </div>
           <div class="note">Structured fields build {name=..., location=tavern/mainpub}. Extra props appended as-is.</div>
+          </div>
         </div>
 
         <div class="section" data-tools="burrow">
-          <h3>Burrows</h3>
+          <h3>Burrow tokens</h3>
           <div class="tool-grid" id="burrow-types"></div>
-          <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+          <div class="ctx-section" style="margin:12px -14px 0;">
+          <div class="ch">Burrow options</div>
+          <div class="row" style="gap:8px;">
             <input id="burrow-name" type="text" placeholder="name (e.g. Safe)" />
             <label><input id="burrow-create" type="checkbox" /> create</label>
             <input id="burrow-civalert" type="text" placeholder="civalert (e.g. Siege)" />
@@ -380,23 +649,11 @@
             <input id="burrow-props" type="text" placeholder="extra props, e.g. autochop_wood=true" />
           </div>
           <div class="note">Structured fields build {name=..., create=true, civalert=...}. Extra props support autochop_* and others.</div>
+          </div>
         </div>
 
-        <div class="section" data-tools="query">
-          <h3>Query (q: settings)</h3>
-          <div class="tool-grid">
-            <div class="tool" data-tool="q:settings">Settings<small>q:settings</small></div>
-            <div class="tool" data-tool="q:link">Link<small>q:link</small></div>
-            <div class="tool" data-tool="q:profile">Profile<small>q:profile</small></div>
-            <div class="tool" data-tool="">Eraser<small>blank</small></div>
-            <div class="tool custom">
-              <input type="text" placeholder="custom query token (e.g., q:take-from:SP name)" />
-              <button data-apply-custom>Use</button>
-            </div>
-          </div>
-          <div class="note hint">Query strings vary widely; use custom text to encode exact quickfort commands.</div>
-        </div>
       </div>
+      <div class="sidebar-resizer" id="sidebar-resizer" title="Drag to resize sidebar" aria-hidden="true"></div>
     </aside>
     <section class="workspace">
       <div class="tabs" id="tabs"></div>
@@ -405,51 +662,172 @@
           <div class="axes-overlay" id="axes-overlay"></div>
           <table class="grid" id="grid"></table>
         </div>
+        <!-- Floating selection toolbar (rotate/mirror/copy over an active selection) -->
+        <div id="sel-toolbar" class="sel-toolbar hidden" role="toolbar" aria-label="Selection actions">
+          <button id="rotate-selection" type="button" title="Rotate 90 clockwise"><i class="ti ti-rotate-clockwise"></i>Rotate</button>
+          <button id="mirror-y-selection" type="button" title="Mirror Y (flip horizontally)"><i class="ti ti-flip-horizontal"></i>Mirror Y</button>
+          <button id="mirror-x-selection" type="button" title="Mirror X (flip vertically)"><i class="ti ti-flip-vertical"></i>Mirror X</button>
+          <button id="copy-selection" type="button" title="Copy selection"><i class="ti ti-copy"></i>Copy</button>
+          <button id="cut-selection" type="button" title="Cut selection"><i class="ti ti-scissors"></i>Cut</button>
+        </div>
+        <!-- Legend: floating, collapsible panel listing tokens present on this grid -->
+        <div id="legend" class="legend hidden" aria-label="Colour legend"></div>
       </div>
       <div class="statusbar">
-        <div>
-          <span>Active: <strong id="active-tab-label">dig</strong></span>
-          <span> | Tool: <span class="kbd" id="active-tool">d</span></span>
-          <span id="pos" class="note"></span>
-        </div>
+        <span class="stat"><span class="dot"></span><span id="active-tab-label">dig</span> tab</span>
+        <span class="stat muted"><i class="ti ti-brush"></i>Tool: <span class="kbd" id="active-tool">d</span></span>
+        <span class="stat muted" id="pos-stat"><i class="ti ti-pointer"></i><span id="pos">-</span></span>
+        <div class="grow"></div>
         <div class="actions">
-          <button id="undo-btn" class="secondary" title="Undo (Ctrl+Z)" disabled>Undo</button>
-          <button id="redo-btn" class="secondary" title="Redo (Ctrl+Y / Ctrl+Shift+Z)" disabled>Redo</button>
+          <button id="undo-btn" title="Undo (Ctrl+Z)" disabled><i class="ti ti-arrow-back-up"></i>Undo</button>
+          <button id="redo-btn" title="Redo (Ctrl+Y / Ctrl+Shift+Z)" disabled><i class="ti ti-arrow-forward-up"></i>Redo</button>
           <span class="sep" aria-hidden="true"></span>
-          <button id="select-toggle" class="secondary" title="Toggle selection mode">Select Area</button>
-          <button id="copy-selection" class="secondary" disabled>Copy Selection</button>
-          <button id="cut-selection" class="secondary" disabled>Cut</button>
-          <button id="paste-selection" class="secondary" disabled>Paste</button>
-          <button id="clear-selection" class="secondary" disabled>Clear Selection</button>
-          <span id="transform-controls" style="display:none; gap:6px; align-items:center;">
-            <span class="sep" aria-hidden="true"></span>
-            <button id="rotate-selection" class="secondary" title="Rotate 90° clockwise" disabled>Rotate</button>
-            <button id="mirror-y-selection" class="secondary" title="Mirror Y (flip horizontally)" disabled>Mirror Y</button>
-            <button id="mirror-x-selection" class="secondary" title="Mirror X (flip vertically)" disabled>Mirror X</button>
-          </span>
-          <label class="note" style="margin-left:8px; display:inline-flex; align-items:center; gap:6px;">
+          <button id="select-toggle" title="Toggle selection mode"><i class="ti ti-select"></i>Select</button>
+          <button id="paste-selection" disabled><i class="ti ti-clipboard"></i>Paste</button>
+          <button id="clear-selection" disabled>Clear</button>
+          <label class="note" style="display:inline-flex; align-items:center; gap:6px;">
             <input id="paste-skip-blanks" type="checkbox" /> Skip blanks
           </label>
           <span class="sep" aria-hidden="true"></span>
-          <button id="copycsv">Copy to clipboard</button>
-          <button id="downloadcsv" class="primary">Download CSV</button>
-          <button id="exportall" class="secondary">Export All</button>
-          <button id="loadcsv" class="secondary">Load</button>
-          <input id="fileinput" type="file" accept=".csv,.txt" style="display:none" />
+          <select id="paste-bp-select" title="Pick another blueprint to stamp into this one"></select>
+          <button id="paste-bp-btn" title="Load the chosen blueprint's current tab into the paste buffer, then click the grid to stamp it"><i class="ti ti-stamp"></i>Paste Blueprint</button>
         </div>
+        <span class="hint" style="width:100%; margin-top:2px;">Right-click to erase &middot; wheel over grid to change Z-level &middot; drag amber handles to move mirror axes</span>
+        <!-- Hidden controls retained for transform wiring that targets #transform-controls -->
+        <span id="transform-controls" style="display:none;"></span>
+      </div>
+      <!-- Source markup for the Import/Export/Help menus. At startup these are
+           relocated into the floating #io-dock and this bar is removed (see
+           relocateBottomBar). -->
+      <div class="bp-bar" id="bp-bar">
+        <span id="bp-count" class="note"></span>
+        <span class="bp-spacer"></span>
+
+    <span class="gsize" id="grid-size-badge">30 x 20</span>
+    <!-- Import: opens a small menu to load CSV or an .xlsx workbook -->
+    <div class="menu-wrap up">
+      <button id="import-btn" class="tb-btn" aria-haspopup="true" aria-expanded="false" title="Import a blueprint"><i class="ti ti-upload"></i>Import <i class="ti ti-chevron-down" style="font-size:13px"></i></button>
+      <div id="import-menu" class="menu hidden" role="menu">
+        <button id="loadcsv" type="button"><i class="ti ti-file-text"></i>Load CSV</button>
+        <button id="loadworkbook" type="button" title="Import an .xlsx workbook (one blueprint per sheet)"><i class="ti ti-table"></i>Load Workbook (.xlsx)</button>
+        <input id="fileinput" type="file" accept=".csv,.txt" style="display:none" />
+        <input id="workbookinput" type="file" accept=".xlsx" style="display:none" />
+      </div>
+    </div>
+    <!-- Export: the primary action. Copy / Download / Export All / .xlsx live here. -->
+    <div class="menu-wrap up">
+      <button id="export-btn" class="tb-btn primary" aria-haspopup="true" aria-expanded="false" title="Export this blueprint"><i class="ti ti-download"></i>Export <i class="ti ti-chevron-down" style="font-size:13px"></i></button>
+      <div id="export-menu" class="menu hidden" role="menu">
+        <div class="menu-lbl">Current tab</div>
+        <button id="copycsv" type="button"><i class="ti ti-clipboard"></i>Copy to clipboard</button>
+        <button id="downloadcsv" type="button"><i class="ti ti-file-download"></i>Download CSV</button>
+        <button id="downloadxlsx" type="button" title="Export the current tab as a shaded Excel .xlsx (cell fills mirror the grid colours)"><i class="ti ti-table-export"></i>Export .xlsx (shaded)</button>
+        <div class="menu-sep"></div>
+        <div class="menu-lbl">All tabs / workbook</div>
+        <button id="exportall" type="button"><i class="ti ti-files"></i>Export All (CSV)</button>
+        <button id="exportallxlsx" type="button" title="Export all tabs as one shaded .xlsx (one sheet per tab)"><i class="ti ti-table-export"></i>Export All .xlsx</button>
+        <button id="exportworkbook" type="button" title="Export every blueprint as one shaded .xlsx (one sheet per blueprint)"><i class="ti ti-books"></i>Export Workbook .xlsx</button>
+        <div class="menu-sep"></div>
+        <div class="menu-lbl">Export options</div>
+        <label class="menu-opt" title="Collapse solid same-token rectangles to token(WxH); non-rectangular regions are left untouched"><input type="checkbox" id="opt-area-expand"/> Area expansion <span class="menu-hint">collapse rectangles</span></label>
+        <label class="menu-opt" title="Write d1..d7 dig cells as bare 1..7"><input type="checkbox" id="opt-bare-priorities"/> Bare dig priorities <span class="menu-hint">d1-d7 &rarr; 1-7</span></label>
+      </div>
+    </div>
+    <div class="menu-wrap up">
+    <button id="help-btn" title="Usage help" aria-label="Help"><i class="ti ti-help"></i></button>
+    <div id="help-pop" class="popover hidden">
+        <strong>Layout</strong><br>
+        Tools are on the left rail, the grid fills the middle, and the right panel holds the
+        Z-levels list and the active mode's tokens and properties (collapse it with the chevron
+        at the panel's edge). The search box up top runs any command.<br><br>
+
+        <strong>Painting</strong><br>
+        Left-click paints the active token, right-click erases, drag to paint across cells. Pick a
+        shape in the left rail (Freehand / Rect / Line / Circle / Fill) and set the Brush size
+        there. "Hollow" outlines Rect/Circle.<br><br>
+
+        <strong>Mirror</strong><br>
+        The two mirror toggles in the rail paint symmetrically; drag the amber axis handles on the
+        grid to move the mirror lines.<br><br>
+
+        <strong>Modes &amp; tokens</strong><br>
+        Switch mode with the tabs over the canvas (Dig / Build / Stockpiles / Zones / Burrows),
+        then choose a token and set its properties in the right panel.<br><br>
+
+        <strong>Z-levels</strong><br>
+        Use the Z-levels list in the right panel to switch, add, or remove floors; wheel over the
+        grid to change floor. "Preview" shows the next floor faded for alignment, and #dig
+        designations appear as a teal overlay on other modes.<br><br>
+
+        <strong>Blueprints</strong><br>
+        The tabs in the top bar are your blueprints: click to switch, double-click to rename, and
+        use the +/copy/pencil/trash icons to add, duplicate, rename, or delete.<br><br>
+
+        <strong>Command palette</strong><br>
+        Press Ctrl/Cmd+K (or click the search box) to run anything: undo/redo, selection
+        paste/clear, stamp another blueprint, Trim Z, Clear grid, and the exports.<br><br>
+
+        <strong>Selection</strong><br>
+        The Select tool (top of the rail) marks a rectangle; a floating toolbar offers
+        Rotate / Mirror / Copy / Cut. Paste mode shows a ghost under the cursor; right-click or
+        Esc cancels. "Skip blanks" (in the palette) avoids overwriting non-empty cells.<br><br>
+
+        <strong>Import / Export</strong><br>
+        Use the pill in the canvas's bottom-right corner. Export copies/saves quickfort CSV or a
+        shaded .xlsx (current tab, all tabs, or the whole workbook); Import loads CSV or an .xlsx
+        workbook. Export options (area expansion, bare dig priorities) are in the Export menu.<br><br>
+
+        <strong>Keyboard shortcuts</strong><br>
+        Ctrl/Cmd+K - command palette<br>
+        Ctrl/Cmd+Z / Ctrl/Cmd+Y (or Ctrl/Cmd+Shift+Z) - undo / redo<br>
+        Ctrl/Cmd + + / - / 0 - zoom in / out / reset<br>
+        Ctrl/Cmd+C - copy selection &middot; Ctrl/Cmd+V - toggle paste mode<br>
+        Esc - clear selection or exit paste mode
+    </div>
+    </div>
       </div>
     </section>
+    <button id="panel-toggle" type="button" title="Show or hide the panel" aria-label="Toggle panel"><i class="ti ti-chevron-right"></i></button>
   </main>
+
+  <!-- Colour customization modal: the chosen colours are the single source of truth
+       driving both the in-editor shading and the shaded Excel export. Persisted in
+       localStorage. Built dynamically from the default palettes in buildColorModal(). -->
+  <div id="colors-modal" class="modal-backdrop hidden">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="colors-title">
+      <header style="display:flex; align-items:center; gap:12px; padding:12px 16px;">
+        <h2 id="colors-title">Customize colours</h2>
+        <div class="spacer" style="flex:1;"></div>
+        <button id="colors-close" class="secondary" title="Close">Close</button>
+      </header>
+      <div class="modal-body" id="colors-body">
+        <p class="note" style="margin-top:0;">These colours drive the grid shading, the legend, and the shaded Excel export. Changes apply live and persist across reloads.</p>
+        <div id="colors-groups"></div>
+      </div>
+      <div class="modal-foot">
+        <button id="colors-reset-all" class="secondary" title="Reset every colour to its default">Reset all</button>
+        <span class="spacer"></span>
+        <button id="colors-done" class="primary">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Command palette (Ctrl K / Ctrl P): fuzzy-run any long-tail action. -->
+  <div id="cmdk" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="cmdk-box">
+      <input id="cmdk-input" type="text" placeholder="Type a command…  (Esc to close)" autocomplete="off" spellcheck="false" />
+      <div id="cmdk-list" class="cmdk-list"></div>
+    </div>
+  </div>
 
   <script>
     // Blueprint tabs and their quickfort type headers
     const Tabs = [
-      { id: 'dig', label: 'Dig', header: '#dig' },
-      { id: 'build', label: 'Build', header: '#build' },
-      { id: 'place', label: 'Stockpiles', header: '#place' },
-      { id: 'zone', label: 'Zones', header: '#zone' },
-      { id: 'burrow', label: 'Burrows', header: '#burrow' },
-      { id: 'query', label: 'Query', header: '#query' },
+      { id: 'dig', label: 'Dig', header: '#dig', icon: 'ti-pick' },
+      { id: 'build', label: 'Build', header: '#build', icon: 'ti-hammer' },
+      { id: 'place', label: 'Stockpiles', header: '#place', icon: 'ti-stack-2' },
+      { id: 'zone', label: 'Zones', header: '#zone', icon: 'ti-map-pin' },
+      { id: 'burrow', label: 'Burrows', header: '#burrow', icon: 'ti-polygon' },
     ];
 
     const defaultCols = 30;
@@ -504,6 +882,14 @@ const state = {
       showFullSyntax: false,
       // Z import/export fidelity default (preserve is default mode)
       preserveZOrder: true,
+      // Picture view (hide glyphs, pure colour map) and colour legend visibility.
+      pictureView: false,
+      legendVisible: false,
+      // Export options (gear menu); all default OFF so existing output is unchanged.
+      exportAreaExpand: false,      // collapse solid same-token rectangles to token(WxH)
+      exportBarePriorities: false,  // dig d1..d7 -> bare 1..7
+      exportContainerShorthand: false, // stockpile single container prop -> s5 form
+      exportAdditiveTracks: false,  // straight carved-track runs -> T(1xN)/T(Wx1)
     };
 
     const gridEl = document.getElementById('grid');
@@ -601,15 +987,27 @@ const state = {
     const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(cols);
     const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(rows);
     resizeAllGrids(rows, cols);
+    updateGridSizeBadge();
     renderGrid();
+  }
+
+  function updateGridSizeBadge() {
+    const b = document.getElementById('grid-size-badge');
+    if (b) b.textContent = `${state.cols} x ${state.rows}`;
   }
 
     function renderTabs() {
       tabsEl.innerHTML = '';
       Tabs.forEach(t => {
         const b = document.createElement('button');
-        b.textContent = t.label;
+        if (t.icon) {
+          const ic = document.createElement('i');
+          ic.className = 'ti ' + t.icon;
+          b.appendChild(ic);
+        }
+        b.appendChild(document.createTextNode(t.label));
         b.className = t.id === state.activeTab ? 'active' : '';
+        b.setAttribute('aria-label', t.label + ' tab');
         b.addEventListener('click', () => setActiveTab(t.id));
         tabsEl.appendChild(b);
       })
@@ -627,6 +1025,7 @@ const state = {
       });
       // restore active tool label
       activeToolLbl.textContent = state.selectedToolByTab[id] || 'blank';
+      if (state.legendVisible) renderLegend();
       renderGrid();
     }
 
@@ -774,7 +1173,7 @@ const state = {
           if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
           td.addEventListener('mousedown', (e) => onCellDown(e, r, c));
           td.addEventListener('mouseenter', (e) => onCellEnter(e, r, c));
-          td.addEventListener('mousemove', () => posLbl.textContent = ` | R${r+1}C${c+1}`);
+          td.addEventListener('mousemove', () => posLbl.textContent = `${c+1}, ${r+1}`);
           td.addEventListener('contextmenu', (e) => { e.preventDefault(); /* right-click handled in onCellDown */ });
           row.appendChild(td);
         }
@@ -790,6 +1189,10 @@ const state = {
       // ensure history buckets exist and refresh undo/redo buttons
       ensureHistory();
       updateUndoRedoButtons();
+      // keep the floating selection toolbar aligned to the (re-rendered) grid
+      if (typeof positionSelToolbar === 'function') positionSelToolbar();
+      // refresh the "on this grid" legend when it is visible
+      if (state.legendVisible && typeof renderLegend === 'function') renderLegend();
   }
 
     // Zoom handling (shared across all tabs)
@@ -977,6 +1380,30 @@ const state = {
       const cells = rectCells(rect.r0, rect.c0, rect.r1, rect.c1, false, 1);
       setSelectionOverlay(cells);
     }
+    // Position the floating selection toolbar above the active selection rect.
+    function positionSelToolbar() {
+      const bar = document.getElementById('sel-toolbar');
+      if (!bar) return;
+      const rect = state.selectionRect;
+      const onThisGrid = rect && rect.tab === state.activeTab && rect.z === state.activeZ && !state.pasteMode;
+      if (!onThisGrid) { bar.classList.add('hidden'); return; }
+      const r0 = Math.min(rect.r0, rect.r1), c0 = Math.min(rect.c0, rect.c1);
+      const c1 = Math.max(rect.c0, rect.c1);
+      const trTop = gridEl.rows[r0]; if (!trTop) { bar.classList.add('hidden'); return; }
+      const tdL = trTop.cells[c0], tdR = trTop.cells[c1];
+      if (!tdL || !tdR) { bar.classList.add('hidden'); return; }
+      bar.classList.remove('hidden');
+      const wrap = document.querySelector('.gridwrap');
+      const wrapRect = wrap.getBoundingClientRect();
+      const lRect = tdL.getBoundingClientRect();
+      const rRect = tdR.getBoundingClientRect();
+      const left = (lRect.left - wrapRect.left) + wrap.scrollLeft;
+      let top = (lRect.top - wrapRect.top) + wrap.scrollTop - bar.offsetHeight - 6;
+      if (top < wrap.scrollTop) top = (rRect.bottom - wrapRect.top) + wrap.scrollTop + 6;
+      bar.style.left = Math.max(0, left) + 'px';
+      bar.style.top = Math.max(0, top) + 'px';
+    }
+
     function updateSelectionButtons() {
       const copyBtn = document.getElementById('copy-selection');
       const cutBtn = document.getElementById('cut-selection');
@@ -985,12 +1412,17 @@ const state = {
       const rotateBtn = document.getElementById('rotate-selection');
       const mirrorXBtn = document.getElementById('mirror-x-selection');
       const mirrorYBtn = document.getElementById('mirror-y-selection');
-      const transformWrap = document.getElementById('transform-controls');
       const skipCb = document.getElementById('paste-skip-blanks');
       const has = !!state.selectionRect;
+      // Transforms now act on the live selection (or the paste buffer in paste mode),
+      // so they are enabled whenever there is a selection or a buffer.
+      const canTransform = has || (state.pasteMode && !!state.copyBuffer);
       if (copyBtn) copyBtn.disabled = !has;
       if (cutBtn) cutBtn.disabled = !has;
       if (clearBtn) clearBtn.disabled = !has;
+      if (rotateBtn) rotateBtn.disabled = !canTransform;
+      if (mirrorXBtn) mirrorXBtn.disabled = !canTransform;
+      if (mirrorYBtn) mirrorYBtn.disabled = !canTransform;
       if (pasteBtn) {
         pasteBtn.disabled = !state.copyBuffer;
         pasteBtn.classList.toggle('active', !!state.pasteMode);
@@ -999,19 +1431,13 @@ const state = {
         skipCb.disabled = !state.copyBuffer;
         skipCb.checked = !!state.pasteSkipBlanks;
       }
-      // Show transform controls only in paste mode with a buffer
-      const showTransforms = (state.pasteMode && !!state.copyBuffer);
-      if (transformWrap) transformWrap.style.display = showTransforms ? 'inline-flex' : 'none';
-      const enableTransforms = showTransforms;
-      if (rotateBtn) rotateBtn.disabled = !enableTransforms;
-      if (mirrorXBtn) mirrorXBtn.disabled = !enableTransforms;
-      if (mirrorYBtn) mirrorYBtn.disabled = !enableTransforms;
       const toggle = document.getElementById('select-toggle');
       if (toggle) toggle.classList.toggle('active', !!state.selectionMode);
       if (gridContainerEl) {
         gridContainerEl.classList.toggle('select-mode', !!state.selectionMode);
         gridContainerEl.classList.toggle('paste-mode', !!state.pasteMode);
       }
+      positionSelToolbar();
     }
     function clearSelection() {
       state.selectionRect = null;
@@ -1035,12 +1461,11 @@ const state = {
       const lines = matrixRowsToCSVLines(sub);
       copyToClipboard(lines.join('\n'));
       state.copyBuffer = sub;
-      // remove active selection after copy and exit selection mode
-      clearSelection();
+      // Keep the selection LIVE after copy (finding 5). Leaving selection mode so
+      // a stray drag does not re-mark, but the rectangle and its toolbar persist.
       state.selectionMode = false;
       state.selecting = false;
       state.selStart = null;
-      // enable paste button
       updateSelectionButtons();
     }
 
@@ -1074,13 +1499,47 @@ const state = {
       }
       return out;
     }
+    function applyMatTransform(mat, kind) {
+      if (kind === 'rotate') return rotateMatrixCW(mat);
+      if (kind === 'mx') return mirrorMatrixX(mat);
+      if (kind === 'my') return mirrorMatrixY(mat);
+      return mat;
+    }
     function transformSelectionOrBuffer(kind) {
-      // Only active in paste mode; selection state is ignored.
-      if (!(state.pasteMode && state.copyBuffer)) return;
-      if (kind === 'rotate') state.copyBuffer = rotateMatrixCW(state.copyBuffer);
-      else if (kind === 'mx') state.copyBuffer = mirrorMatrixX(state.copyBuffer);
-      else if (kind === 'my') state.copyBuffer = mirrorMatrixY(state.copyBuffer);
-      applyPastePreviewFromHover();
+      // In paste mode: transform the paste buffer (preview updates live).
+      if (state.pasteMode && state.copyBuffer) {
+        state.copyBuffer = applyMatTransform(state.copyBuffer, kind);
+        applyPastePreviewFromHover();
+        updateSelectionButtons();
+        return;
+      }
+      // Otherwise: transform the live selection content in place (finding 5).
+      const rect = state.selectionRect;
+      if (!rect || rect.tab !== state.activeTab || rect.z !== state.activeZ) return;
+      const mat = getMatrix(rect.tab, rect.z);
+      const r0 = Math.max(0, Math.min(rect.r0, rect.r1));
+      const r1 = Math.min(mat.length-1, Math.max(rect.r0, rect.r1));
+      const c0 = Math.max(0, Math.min(rect.c0, rect.c1));
+      const c1 = Math.min(mat[0].length-1, Math.max(rect.c0, rect.c1));
+      const sub = [];
+      for (let r=r0; r<=r1; r++) { const row=[]; for (let c=c0; c<=c1; c++) row.push(mat[r][c] ?? ''); sub.push(row); }
+      const out = applyMatTransform(sub, kind);
+      historyBegin();
+      // Clear original region, then write transformed content anchored at top-left.
+      for (let r=r0; r<=r1; r++) for (let c=c0; c<=c1; c++) setCellValue(rect.tab, rect.z, r, c, '');
+      const R = mat.length, C = mat[0].length;
+      for (let dr=0; dr<out.length; dr++) {
+        for (let dc=0; dc<(out[0]?.length||0); dc++) {
+          const rr = r0+dr, cc = c0+dc;
+          if (rr<0||cc<0||rr>=R||cc>=C) continue;
+          setCellValue(rect.tab, rect.z, rr, cc, out[dr][dc] ?? '');
+        }
+      }
+      historyCommit();
+      // Update the selection rect to the new footprint (clamped).
+      state.selectionRect = { r0, c0, r1: Math.min(R-1, r0 + out.length - 1), c1: Math.min(C-1, c0 + (out[0]?.length||1) - 1), tab: rect.tab, z: rect.z };
+      maybeRenderPreview();
+      applySelectionOverlayFromRect();
       updateSelectionButtons();
     }
 
@@ -1391,7 +1850,7 @@ const state = {
         const base = stripPropsAndCfg(s);
         return getBuildColorForToken(base);
       }
-      if (scopeId === 'query') return '#ff9500';
+      if (scopeId === 'query') return COLOR_QUERY.q || '#ff9500';
       return null;
     }
     function applyPastePreviewFromHover() {
@@ -1607,6 +2066,577 @@ const state = {
       navigator.clipboard?.writeText(text).catch(()=>{});
     }
 
+    // ----------------------------------------------------------------------
+    // Excel (.xlsx) export. FOUNDATION for future Excel features (shading,
+    // multi-sheet packaging). Uses SheetJS (XLSX global from the cdnjs script
+    // in <head>). Keep this section self-contained and library-agnostic at the
+    // call sites: callers pass a token matrix, this builds the worksheet.
+    // ----------------------------------------------------------------------
+
+    // True if the xlsx-js-style library actually loaded (CDN reachable) and can
+    // both build worksheets and write workbooks.
+    function xlsxAvailable() {
+      return typeof XLSX !== 'undefined' && XLSX && XLSX.utils && XLSX.write;
+    }
+
+    // Excel sheet names: max 31 chars, no : \ / ? * [ ]. Sanitize tab ids.
+    function safeSheetName(name, used) {
+      let s = String(name || 'Sheet').replace(/[:\\\/?*\[\]]/g, '_').slice(0, 31) || 'Sheet';
+      let base = s, i = 2;
+      while (used.has(s)) { s = (base.slice(0, 28) + '_' + i).slice(0, 31); i++; }
+      used.add(s);
+      return s;
+    }
+
+    // Trigger a binary .xlsx download from a SheetJS workbook.
+    function downloadWorkbook(filename, wb) {
+      // bookType xlsx, write to an array buffer, hand to the same blob path as CSV.
+      const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    // ======================================================================
+    // SHADED .xlsx export -- cell fills mirror the grid colours.
+    // ----------------------------------------------------------------------
+    // Uses xlsx-js-style (the styled SheetJS fork loaded in <head>): it writes
+    // per-cell `s` styles (fill, font, border) that plain SheetJS cannot.
+    // The fill colour for each populated cell comes from baseColorForToken() --
+    // the SAME token -> colour resolver the grid uses -- so the spreadsheet
+    // matches the screen by construction, INCLUDING any user colour overrides.
+    // There is ONE styled path; all three export buttons (single tab, all tabs,
+    // whole workbook) route through it, and the old plain-export duplication is
+    // gone. (matrixToWorksheet is retained only for round-trip workbook IMPORT,
+    // which reads values and ignores styles.)
+    // ======================================================================
+
+    // CSS hex (#rgb or #rrggbb) -> Excel 8-digit ARGB ("#3fa7ff" -> "FF3FA7FF").
+    // Returns null for non-hex inputs (CSS var()/rgb()/gradient), so callers can
+    // fall back to a neutral fill instead of emitting a broken style.
+    function hexToARGB(hex) {
+      if (!hex || typeof hex !== 'string') return null;
+      let h = hex.trim();
+      if (h[0] !== '#') return null;
+      h = h.slice(1);
+      if (h.length === 3) h = h.split('').map(ch => ch + ch).join('');
+      if (h.length !== 6 || /[^0-9a-fA-F]/.test(h)) return null;
+      return 'FF' + h.toUpperCase();
+    }
+    // Readable font ARGB (black/white) for a fill, matching ensureReadableText.
+    function fontARGBForFill(hex) {
+      const h = (hex || '').replace('#', '');
+      if (h.length !== 6) return 'FF000000';
+      const r = parseInt(h.slice(0, 2), 16) / 255;
+      const g = parseInt(h.slice(2, 4), 16) / 255;
+      const b = parseInt(h.slice(4, 6), 16) / 255;
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      return lum > 0.6 ? 'FF111111' : 'FFFFFFFF';
+    }
+    function thinBorder() {
+      const s = { style: 'thin', color: { rgb: 'FF1A1A21' } };
+      return { top: s, bottom: s, left: s, right: s };
+    }
+    function cellStyle(fillARGB) {
+      return {
+        fill: { patternType: 'solid', fgColor: { rgb: fillARGB } },
+        font: { name: 'Consolas', sz: 10, color: { rgb: fontARGBForFill('#' + fillARGB.slice(2)) } },
+        alignment: { horizontal: 'center', vertical: 'center' },
+        border: thinBorder()
+      };
+    }
+    function cellStyleFallback() { return cellStyle('FF666666'); }
+    function metaRowStyle() {
+      return {
+        font: { name: 'Consolas', sz: 10, bold: true, color: { rgb: 'FFE6E6E9' } },
+        fill: { patternType: 'solid', fgColor: { rgb: 'FF14141A' } },
+        alignment: { horizontal: 'left', vertical: 'center' }
+      };
+    }
+
+    // Build a STYLED worksheet from a list of row descriptors:
+    //   { meta:true, text }            -> a modeline/#> header row (col A, meta style)
+    //   { cells:[tok,...], scope }     -> a grid row; each token shaded via its scope
+    // scope is the tab id used to colour the token. Returns the SheetJS ws object.
+    function styledWorksheetFromRows(rows) {
+      let maxCols = 1;
+      for (const row of rows) {
+        if (row.meta) maxCols = Math.max(maxCols, 1);
+        else maxCols = Math.max(maxCols, (row.cells || []).length);
+      }
+      const ws = {};
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r];
+        if (row.meta) {
+          const addr = XLSX.utils.encode_cell({ r, c: 0 });
+          ws[addr] = { t: 's', v: row.text, s: metaRowStyle() };
+          continue;
+        }
+        const scope = row.scope;
+        for (let c = 0; c < (row.cells || []).length; c++) {
+          const tok = row.cells[c];
+          if (!tok) continue; // leave blank cells empty/unstyled
+          const addr = XLSX.utils.encode_cell({ r, c });
+          const hex = baseColorForToken(scope, tok); // SAME mapping as the grid
+          const argb = hexToARGB(hex);
+          ws[addr] = { t: 's', v: tok, s: argb ? cellStyle(argb) : cellStyleFallback() };
+        }
+      }
+      ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(0, rows.length - 1), c: Math.max(0, maxCols - 1) } });
+      ws['!cols'] = Array.from({ length: maxCols }, () => ({ wch: 4 }));
+      ws['!rows'] = Array.from({ length: rows.length }, () => ({ hpt: 18 }));
+      return ws;
+    }
+
+    // Styled worksheet for ONE tab (single scope). Mirrors tabToXlsxAOA layout:
+    // modeline header, Z-layers stacked with "#>", preserve-vs-trim behaviour.
+    function tabToStyledWorksheet(tabId) {
+      ensureGrids();
+      const tab = Tabs.find(t => t.id === tabId) || Tabs[0];
+      const n = state.zCount;
+      const rows = [];
+      rows.push({ meta: true, text: tab.header });
+
+      function isEmptyLayer(zDisp) {
+        const mat = getMatrix(tabId, zDisp);
+        if (!mat) return true;
+        for (let r = 0; r < mat.length; r++)
+          for (let c = 0; c < mat[0].length; c++)
+            if (mat[r][c]) return false;
+        return true;
+      }
+      function pushMatrix(mat) {
+        for (const row of (mat || [])) rows.push({ cells: (row || []).map(c => String(c ?? '')), scope: tabId });
+      }
+
+      if (state.preserveZOrder) {
+        const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex | 0));
+        rows.push({ meta: true, text: `#0${origin}` });
+        for (let z = 0; z < n; z++) {
+          if (z > 0) rows.push({ meta: true, text: '#>' });
+          pushMatrix(getMatrix(tabId, z));
+        }
+      } else {
+        let low = 0, high = n - 1;
+        while (low <= high && isEmptyLayer(high)) high--;
+        while (low <= high && isEmptyLayer(low)) low++;
+        if (low > high) {
+          const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex | 0));
+          pushMatrix(getMatrix(tabId, origin));
+        } else {
+          let first = true;
+          for (let z = low; z <= high; z++) {
+            if (!first) rows.push({ meta: true, text: '#>' });
+            pushMatrix(getMatrix(tabId, z));
+            first = false;
+          }
+        }
+      }
+      return styledWorksheetFromRows(rows);
+    }
+
+    // Styled worksheet for one BLUEPRINT (all content-bearing tabs stacked as
+    // modeline sections).
+    function blueprintToStyledWorksheet(bp) {
+      const n = Math.max(1, bp.zCount | 0);
+      const rows = [];
+      function layerEmpty(mat) {
+        if (!mat) return true;
+        for (let r = 0; r < mat.length; r++)
+          for (let c = 0; c < (mat[0] ? mat[0].length : 0); c++)
+            if (mat[r][c]) return false;
+        return true;
+      }
+      function matAt(grids, tabId, zDisp) {
+        const layers = grids[tabId] || [];
+        const len = Math.max(1, layers.length);
+        const zz = (len - 1) - Math.max(0, Math.min(len - 1, zDisp));
+        return layers[zz];
+      }
+      function tabHasContent(tabId) {
+        for (let z = 0; z < n; z++) if (!layerEmpty(matAt(bp.grids, tabId, z))) return true;
+        return false;
+      }
+      function pushMatrix(mat, scope) {
+        for (const row of (mat || [])) rows.push({ cells: (row || []).map(c => String(c ?? '')), scope });
+      }
+      let firstSection = true;
+      Tabs.forEach(tab => {
+        if (!tabHasContent(tab.id)) return;
+        if (!firstSection) rows.push({ cells: [], scope: tab.id }); // blank separator
+        firstSection = false;
+        rows.push({ meta: true, text: tab.header });
+        const origin = Math.max(0, Math.min(n - 1, bp.zeroIndex | 0));
+        rows.push({ meta: true, text: `#0${origin}` });
+        for (let z = 0; z < n; z++) {
+          if (z > 0) rows.push({ meta: true, text: '#>' });
+          pushMatrix(transformMatrixForExport(matAt(bp.grids, tab.id, z), tab.id), tab.id);
+        }
+      });
+      if (firstSection) rows.push({ meta: true, text: '#dig' });
+      return styledWorksheetFromRows(rows);
+    }
+
+    function xlsxOfflineAlert() {
+      alert('Excel export needs the xlsx-js-style library, which failed to load (offline?). CSV export still works.');
+    }
+
+    // Export one tab as a single-sheet shaded .xlsx.
+    function exportTabXlsx(tabId) {
+      if (!xlsxAvailable()) { xlsxOfflineAlert(); return; }
+      const wb = XLSX.utils.book_new();
+      const used = new Set();
+      const ws = tabToStyledWorksheet(tabId);
+      XLSX.utils.book_append_sheet(wb, ws, safeSheetName(tabId, used));
+      downloadWorkbook(`${tabId}.xlsx`, wb);
+    }
+
+    // Export all tabs into one shaded workbook, one sheet per tab.
+    function exportAllXlsx() {
+      if (!xlsxAvailable()) { xlsxOfflineAlert(); return; }
+      const wb = XLSX.utils.book_new();
+      const used = new Set();
+      Tabs.forEach(t => {
+        const ws = tabToStyledWorksheet(t.id);
+        XLSX.utils.book_append_sheet(wb, ws, safeSheetName(t.id, used));
+      });
+      downloadWorkbook('quickfort-blueprints.xlsx', wb);
+    }
+
+    // ======================================================================
+    // Multi-sheet workbook: hold several named blueprints in one session and
+    // package them into one .xlsx (one blueprint per sheet). A "blueprint" is
+    // the full editor payload: grid size, all Z-levels, and every tab
+    // (#dig/#build/#place/#zone/#burrow/#query). The live `state` object always
+    // holds the ACTIVE blueprint's working data; the Workbook keeps inactive
+    // blueprints as plain snapshots and swaps them in/out of `state`.
+    // ----------------------------------------------------------------------
+    const Workbook = {
+      name: 'Blueprints', // workbook (file) name, used for the .xlsx download
+      // Blueprint snapshot shape:
+      //  { kind:'grid', name, cols, rows, zCount, zeroIndex, grids, selectedToolByTab }
+      blueprints: [],
+      activeIndex: 0,
+    };
+
+    // Deep-copy the per-tab Z-layer grids so snapshots never alias live arrays.
+    function cloneGrids(grids) {
+      const out = {};
+      Object.keys(grids || {}).forEach(tabId => {
+        out[tabId] = (grids[tabId] || []).map(mat => mat.map(row => row.slice()));
+      });
+      return out;
+    }
+
+    // Capture the current editor state into a portable blueprint snapshot.
+    function snapshotActiveBlueprint(name) {
+      ensureGrids();
+      return {
+        kind: 'grid',
+        name: String(name || 'Blueprint'),
+        cols: state.cols,
+        rows: state.rows,
+        zCount: state.zCount,
+        zeroIndex: state.zeroIndex,
+        grids: cloneGrids(state.grids),
+        selectedToolByTab: Object.assign({}, state.selectedToolByTab),
+      };
+    }
+
+    // Write the active editor state back into the workbook slot it came from,
+    // so switching blueprints does not lose edits.
+    function saveActiveIntoWorkbook() {
+      const bp = Workbook.blueprints[Workbook.activeIndex];
+      if (!bp) return;
+      const name = bp.name; // preserve the slot's name
+      Workbook.blueprints[Workbook.activeIndex] = snapshotActiveBlueprint(name);
+    }
+
+    // Load a blueprint snapshot into the live editor state and re-render.
+    function loadBlueprintIntoState(bp) {
+      if (!bp) return;
+      state.cols = bp.cols;
+      state.rows = bp.rows;
+      state.zCount = Math.max(1, bp.zCount | 0);
+      state.zeroIndex = bp.zeroIndex | 0;
+      state.grids = cloneGrids(bp.grids);
+      state.selectedToolByTab = Object.assign({}, bp.selectedToolByTab || {});
+      // reset transient editing state that should not carry across blueprints
+      state.activeZ = 0;
+      state.selectionRect = null;
+      state.copyBuffer = state.copyBuffer; // keep clipboard (handy for cross-blueprint paste)
+      state.pasteMode = false;
+      state.selectionMode = false;
+      state.history = {};
+      ensureGrids();
+      ensureHistory();
+      clampActiveZ();
+      clampZeroIndex();
+      // sync size inputs
+      const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(state.cols);
+      const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(state.rows);
+      clampAxes && clampAxes();
+      setActiveTab(state.activeTab || 'dig');
+      updateToolUI(); // sync tool-button highlight with this blueprint's selection (clear stale highlight)
+      updateZLabel();
+      renderGrid();
+    }
+
+    // Build the dropdown + count text from the workbook list.
+    function renderBlueprintBar() {
+      const sel = document.getElementById('bp-select');
+      const count = document.getElementById('bp-count');
+      if (sel) {
+        sel.innerHTML = '';
+        Workbook.blueprints.forEach((bp, i) => {
+          const o = document.createElement('option');
+          o.value = String(i);
+          o.textContent = (bp.name || `Blueprint ${i+1}`);
+          if (i === Workbook.activeIndex) o.selected = true;
+          sel.appendChild(o);
+        });
+      }
+      if (count) {
+        const n = Workbook.blueprints.length;
+        count.textContent = `${n} blueprint${n === 1 ? '' : 's'} in "${Workbook.name}"`;
+      }
+      const onlyOne = Workbook.blueprints.length <= 1;
+      const delBtn = document.getElementById('bp-del');
+      if (delBtn) delBtn.disabled = onlyOne;
+      const delTab = document.getElementById('bp-tab-del');
+      if (delTab) delTab.disabled = onlyOne;
+      renderBlueprintTabs();
+      renderPasteBlueprintPicker();
+    }
+
+    // Blueprint document tabs (top bar). Click to switch; double-click to rename.
+    function renderBlueprintTabs() {
+      const host = document.getElementById('bp-tabs');
+      if (!host) return;
+      host.innerHTML = '';
+      Workbook.blueprints.forEach((bp, i) => {
+        const t = document.createElement('button');
+        t.type = 'button';
+        t.className = 'bp-tab' + (i === Workbook.activeIndex ? ' active' : '');
+        t.setAttribute('role', 'tab');
+        t.textContent = bp.name || `Blueprint ${i + 1}`;
+        t.title = 'Click to switch · double-click to rename';
+        t.addEventListener('click', () => { if (i !== Workbook.activeIndex) switchBlueprint(i); });
+        t.addEventListener('dblclick', () => { renameBlueprint(); });
+        host.appendChild(t);
+      });
+    }
+
+    // Fill the "Paste Blueprint" picker with every OTHER blueprint in the
+    // workbook (you cannot stamp a blueprint into itself). The button is
+    // disabled when there is nothing else to paste.
+    function renderPasteBlueprintPicker() {
+      const sel = document.getElementById('paste-bp-select');
+      const btn = document.getElementById('paste-bp-btn');
+      if (!sel) return;
+      const prev = sel.value;
+      sel.innerHTML = '';
+      let count = 0;
+      Workbook.blueprints.forEach((bp, i) => {
+        if (i === Workbook.activeIndex) return; // skip self
+        const o = document.createElement('option');
+        o.value = String(i);
+        o.textContent = (bp.name || `Blueprint ${i+1}`);
+        sel.appendChild(o);
+        count++;
+      });
+      // Restore the previous choice if it still exists.
+      if (prev && sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
+      if (btn) btn.disabled = count === 0;
+      sel.disabled = count === 0;
+    }
+
+    // Load the chosen blueprint's CURRENT-tab top Z-layer into the paste buffer
+    // and enter paste mode, so it stamps exactly like an in-grid copy/paste.
+    // Source tab = the active tab, so e.g. a #dig blueprint stamps into #dig.
+    function startPasteFromBlueprint() {
+      const sel = document.getElementById('paste-bp-select');
+      if (!sel || sel.value === '') return;
+      const idx = parseInt(sel.value, 10);
+      if (isNaN(idx) || idx < 0 || idx >= Workbook.blueprints.length) return;
+      if (idx === Workbook.activeIndex) return;
+      const src = Workbook.blueprints[idx];
+      if (!src || !src.grids) return;
+      const layers = src.grids[state.activeTab] || [];
+      if (!layers.length) { alert(`"${src.name}" has nothing on the ${state.activeTab} tab.`); return; }
+      // Display z 0 = top = last storage slot (mirrors mapZ for the source).
+      const topMat = layers[layers.length - 1];
+      // Deep-copy into a fresh buffer of plain strings.
+      const sub = (topMat || []).map(row => (row || []).map(cell => String(cell ?? '')));
+      if (!sub.length || !sub[0].length) { alert(`"${src.name}" has an empty ${state.activeTab} grid.`); return; }
+      state.copyBuffer = sub;
+      // Enter paste mode using the same machinery as in-grid paste.
+      state.pasteMode = true;
+      state.selectionMode = false;
+      clearSelection();
+      updateSelectionButtons();
+      applyPastePreviewFromHover();
+    }
+
+    // Switch to a different blueprint (saving the current one first).
+    function switchBlueprint(index) {
+      if (index === Workbook.activeIndex) return;
+      if (index < 0 || index >= Workbook.blueprints.length) return;
+      saveActiveIntoWorkbook();
+      Workbook.activeIndex = index;
+      loadBlueprintIntoState(Workbook.blueprints[index]);
+      renderBlueprintBar();
+    }
+
+    // Make a fresh blank blueprint (default grid, single empty Z-level).
+    function blankBlueprint(name) {
+      const grids = {};
+      Tabs.forEach(t => { grids[t.id] = [makeMatrix(defaultRows, defaultCols)]; });
+      const tools = {};
+      Tabs.forEach(t => { tools[t.id] = ''; });
+      return {
+        kind: 'grid',
+        name: String(name || 'Blueprint'),
+        cols: defaultCols, rows: defaultRows, zCount: 1, zeroIndex: 0,
+        grids, selectedToolByTab: tools,
+      };
+    }
+
+    // Generate a non-colliding default name like "Blueprint 3".
+    function uniqueBlueprintName(base) {
+      const names = new Set(Workbook.blueprints.map(b => b.name));
+      if (base && !names.has(base)) return base;
+      let i = Workbook.blueprints.length + 1;
+      let candidate = `Blueprint ${i}`;
+      while (names.has(candidate)) { i++; candidate = `Blueprint ${i}`; }
+      return candidate;
+    }
+
+    function addBlueprint() {
+      saveActiveIntoWorkbook();
+      const bp = blankBlueprint(uniqueBlueprintName());
+      Workbook.blueprints.push(bp);
+      Workbook.activeIndex = Workbook.blueprints.length - 1;
+      loadBlueprintIntoState(bp);
+      renderBlueprintBar();
+    }
+
+    function duplicateBlueprint() {
+      saveActiveIntoWorkbook();
+      const src = Workbook.blueprints[Workbook.activeIndex];
+      if (!src) return;
+      const copy = snapshotActiveBlueprint(uniqueBlueprintName((src.name || 'Blueprint') + ' copy'));
+      Workbook.blueprints.splice(Workbook.activeIndex + 1, 0, copy);
+      Workbook.activeIndex = Workbook.activeIndex + 1;
+      loadBlueprintIntoState(copy);
+      renderBlueprintBar();
+    }
+
+    function renameBlueprint() {
+      const bp = Workbook.blueprints[Workbook.activeIndex];
+      if (!bp) return;
+      const next = prompt('Blueprint name (becomes the Excel sheet name):', bp.name || '');
+      if (next == null) return;
+      const trimmed = next.trim();
+      if (!trimmed) return;
+      bp.name = trimmed;
+      renderBlueprintBar();
+    }
+
+    function deleteBlueprint() {
+      if (Workbook.blueprints.length <= 1) return;
+      const bp = Workbook.blueprints[Workbook.activeIndex];
+      if (!confirm(`Delete blueprint "${bp ? bp.name : ''}"? This cannot be undone.`)) return;
+      Workbook.blueprints.splice(Workbook.activeIndex, 1);
+      if (Workbook.activeIndex >= Workbook.blueprints.length) Workbook.activeIndex = Workbook.blueprints.length - 1;
+      loadBlueprintIntoState(Workbook.blueprints[Workbook.activeIndex]);
+      renderBlueprintBar();
+    }
+
+    // Export the whole workbook: one sheet per blueprint.
+    function exportWorkbookXlsx() {
+      if (!xlsxAvailable()) { xlsxOfflineAlert(); return; }
+      saveActiveIntoWorkbook();
+      const wb = XLSX.utils.book_new();
+      const used = new Set();
+      Workbook.blueprints.forEach((bp, i) => {
+        const ws = blueprintToStyledWorksheet(bp); // shaded
+        XLSX.utils.book_append_sheet(wb, ws, safeSheetName(bp.name || `Blueprint ${i+1}`, used));
+      });
+      const fname = (Workbook.name || 'workbook').replace(/[\\\/:*?"<>|]/g, '_');
+      downloadWorkbook(`${fname}.xlsx`, wb);
+    }
+
+    // Convert a SheetJS worksheet to the array-of-arrays-of-strings shape used
+    // by splitSheetsFromText(). header:1 returns raw rows; we stringify cells.
+    function worksheetToRows(ws) {
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: true, defval: '' });
+      return rows.map(row => (row || []).map(cell => (cell == null ? '' : String(cell))));
+    }
+
+    // Rebuild a blueprint snapshot from one imported sheet (rows of strings).
+    // Reuses the existing section splitter + multi-Z importer by routing them
+    // through a temporary editor state, then captures the result as a snapshot.
+    function rowsToBlueprint(name, rows) {
+      // Reconstruct a text blob and reuse splitSheetsFromText for section parsing.
+      const text = rows.map(r => matrixRowsToCSVLines([r])[0]).join('\n');
+      const sheets = splitSheetsFromText(text);
+      // Figure out the dimensions this blueprint needs.
+      let maxR = 1, maxC = 1;
+      sheets.forEach(s => {
+        const [cols, rws] = findMaxDimensionsOfSection(s.matrix);
+        if (rws > maxR) maxR = rws;
+        if (cols > maxC) maxC = cols;
+      });
+      maxR = Math.max(1, maxR); maxC = Math.max(1, maxC);
+
+      // Build a fresh blueprint and import each section into it via a temp state.
+      const bp = blankBlueprint(name);
+      bp.cols = maxC; bp.rows = maxR;
+      // Use a scratch state so importSectionToMultiZ writes into THIS blueprint.
+      const saved = { grids: state.grids, cols: state.cols, rows: state.rows, zCount: state.zCount, zeroIndex: state.zeroIndex, selectedToolByTab: state.selectedToolByTab };
+      state.grids = {}; state.cols = maxC; state.rows = maxR; state.zCount = 1; state.zeroIndex = 0; state.selectedToolByTab = {};
+      ensureGrids();
+      resizeAllGrids(maxR, maxC);
+      sheets.forEach(s => {
+        const id = headerToTabId(s.header);
+        importSectionToMultiZ(id, s.matrix);
+      });
+      // Capture scratch into the blueprint.
+      bp.grids = cloneGrids(state.grids);
+      bp.zCount = state.zCount;
+      bp.zeroIndex = state.zeroIndex;
+      bp.cols = state.cols; bp.rows = state.rows;
+      // Restore the live state we borrowed.
+      state.grids = saved.grids; state.cols = saved.cols; state.rows = saved.rows;
+      state.zCount = saved.zCount; state.zeroIndex = saved.zeroIndex; state.selectedToolByTab = saved.selectedToolByTab;
+      return bp;
+    }
+
+    // Import an .xlsx workbook: each sheet becomes one named blueprint.
+    function importWorkbookFromArrayBuffer(buf, fileName) {
+      if (!xlsxAvailable()) {
+        alert('Workbook import needs the SheetJS library, which failed to load (offline?).');
+        return;
+      }
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+      const next = [];
+      wb.SheetNames.forEach(sn => {
+        const ws = wb.Sheets[sn];
+        if (!ws) return;
+        const rows = worksheetToRows(ws);
+        next.push(rowsToBlueprint(sn, rows));
+      });
+      if (!next.length) { alert('No sheets found in that workbook.'); return; }
+      Workbook.blueprints = next;
+      Workbook.activeIndex = 0;
+      if (fileName) Workbook.name = String(fileName).replace(/\.xlsx$/i, '');
+      loadBlueprintIntoState(Workbook.blueprints[0]);
+      renderBlueprintBar();
+    }
+
     // Build CSV lines for a matrix (no header)
     function matrixRowsToCSVLines(mat) {
       return mat.map(row => row.map(cell => {
@@ -1618,10 +2648,62 @@ const state = {
       }).join(','));
     }
 
+    // ---- Export-time matrix transforms (gated by the gear menu options) ----
+    // Collapse a connected region of one identical token into top-left token(WxH)
+    // ONLY when the region exactly fills its bounding box (a solid rectangle).
+    // This keeps stockpile/zone semantics: a solid rectangle is the same single
+    // entity whether written freeform or as (WxH), while non-rectangular regions
+    // (L-shapes etc.) are left untouched so they don't get split into pieces.
+    function collapseRectangles(mat) {
+      if (!mat || !mat.length) return mat;
+      const R = mat.length, C = mat[0].length;
+      const out = mat.map(r => r.slice());
+      const seen = Array.from({ length: R }, () => new Array(C).fill(false));
+      const inb = (r, c) => r >= 0 && c >= 0 && r < R && c < C;
+      for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+        if (seen[r][c]) continue;
+        const tok = out[r][c];
+        if (!tok || tok.indexOf('(') >= 0 || tok[0] === '#') { seen[r][c] = true; continue; }
+        const comp = []; const stack = [[r, c]]; seen[r][c] = true;
+        let minR = r, maxR = r, minC = c, maxC = c;
+        while (stack.length) {
+          const [cr, cc] = stack.pop(); comp.push([cr, cc]);
+          if (cr < minR) minR = cr; if (cr > maxR) maxR = cr;
+          if (cc < minC) minC = cc; if (cc > maxC) maxC = cc;
+          const nb = [[cr-1,cc],[cr+1,cc],[cr,cc-1],[cr,cc+1]];
+          for (const [nr, ncc] of nb) if (inb(nr, ncc) && !seen[nr][ncc] && out[nr][ncc] === tok) { seen[nr][ncc] = true; stack.push([nr, ncc]); }
+        }
+        const w = maxC - minC + 1, h = maxR - minR + 1;
+        if (comp.length > 1 && comp.length === w * h) {
+          for (const [cr, cc] of comp) out[cr][cc] = '';
+          out[minR][minC] = `${tok}(${w}x${h})`;
+        }
+      }
+      return out;
+    }
+
+    // Dig priority shorthand: a cell that is exactly d1..d7 becomes bare 1..7
+    // (Quickfort treats a bare 1-7 as the corresponding dig priority).
+    function bareDigPriorities(mat) {
+      return mat.map(row => row.map(cell => {
+        const m = /^d([1-7])$/.exec(String(cell || ''));
+        return m ? m[1] : cell;
+      }));
+    }
+
+    // Apply the enabled export transforms to a layer matrix, in a safe order:
+    // per-cell token rewrites first, then rectangle collapsing.
+    function transformMatrixForExport(mat, tabId) {
+      let m = mat;
+      if (state.exportBarePriorities && tabId === 'dig') m = bareDigPriorities(m);
+      if (state.exportAreaExpand) m = collapseRectangles(m);
+      return m;
+    }
+
     // Multi-z CSV for a single tab, using #> between floors
     function tabToMultiZCSV(tabId) {
       // Two modes:
-      // - Default (preserveZOrder=false): trim empty extremes, export contiguous window top→bottom
+      // - Default (preserveZOrder=false): trim empty extremes, export contiguous window top->bottom
       // - Preserve (preserveZOrder=true): export all display layers 0..zCount-1 with no trimming, 
       //   and include a metadata line "#0N" to preserve zeroIndex for round-trips in this editor
       ensureGrids();
@@ -1636,7 +2718,7 @@ const state = {
         for (let z = 0; z < n; z++) {
           if (z > 0) lines.push('#>');
           const mat = getMatrix(tabId, z);
-          const rows = matrixRowsToCSVLines(mat);
+          const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
           for (const r of rows) lines.push(r);
         }
         return lines.join('\n');
@@ -1659,7 +2741,7 @@ const state = {
           // All layers empty: export a single origin layer if possible, else top
           const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex|0));
           const mat = getMatrix(tabId, origin);
-          const rows = matrixRowsToCSVLines(mat);
+          const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
           for (const r of rows) lines.push(r);
           return lines.join('\n');
         }
@@ -1667,7 +2749,7 @@ const state = {
         for (let z = low; z <= high; z++) {
           if (!first) lines.push('#>');
           const mat = getMatrix(tabId, z);
-          const rows = matrixRowsToCSVLines(mat);
+          const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
           for (const r of rows) lines.push(r);
           first = false;
         }
@@ -1698,7 +2780,7 @@ const state = {
         // All layers empty: export a single origin layer if possible, else top
         const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex|0));
         const mat = getMatrix(tabId, origin);
-        const rows = matrixRowsToCSVLines(mat);
+        const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
         for (const r of rows) lines.push(r);
         return lines.join('\n');
       }
@@ -1706,7 +2788,7 @@ const state = {
       for (let z = low; z <= high; z++) {
         if (!first) lines.push('#>');
         const mat = getMatrix(tabId, z);
-        const rows = matrixRowsToCSVLines(mat);
+        const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
         for (const r of rows) lines.push(r);
         first = false;
       }
@@ -1722,6 +2804,28 @@ const state = {
       const rel = state.zeroIndex - state.activeZ; // above origin => positive
       const s = rel === 0 ? '0' : (rel > 0 ? `+${rel}` : `${rel}`);
       lbl.textContent = `Z${s}`;
+      const zc = document.getElementById('z-count');
+      if (zc) zc.textContent = state.zCount === 1 ? '1 level' : `${state.zCount} levels`;
+      renderLayers();
+    }
+
+    // Z-levels (layers) list in the right panel. Top row = topmost display layer.
+    function renderLayers() {
+      const host = document.getElementById('layers-list');
+      if (!host) return;
+      host.innerHTML = '';
+      for (let d = 0; d < state.zCount; d++) {
+        const rel = state.zeroIndex - d;
+        const row = document.createElement('div');
+        row.className = 'layer-row' + (d === state.activeZ ? ' active' : '');
+        const z = document.createElement('span');
+        z.className = 'lr-z';
+        z.textContent = 'Z' + (rel === 0 ? '0' : (rel > 0 ? '+' + rel : String(rel)));
+        row.appendChild(z);
+        if (rel === 0) { const t = document.createElement('span'); t.className = 'lr-tag'; t.textContent = 'origin'; row.appendChild(t); }
+        row.addEventListener('click', () => { if (d !== state.activeZ) { state.activeZ = d; updateZLabel(); renderGrid(); } });
+        host.appendChild(row);
+      }
     }
 
     // --- Next-grid preview rendering ---
@@ -1912,28 +3016,318 @@ const state = {
       }
     }
 
-    // Color coding
-    const COLOR_DIG = {
-      d:'#3fa7ff', h:'#70d6ff', u:'#ffd166', j:'#ffd166', i:'#fca311', r:'#90be6d', z:'#ff6b6b', n:'#8d99ae', M:'#9b5de5', v:'#577590', T:'#43aa8b', t:'#40916c', p:'#70e000', s:'#adb5bd', e:'#6c757d', F:'#4cc9f0', x:'#2b2d42'
+    // ======================================================================
+    // Color coding -- SINGLE SOURCE OF TRUTH for shading.
+    // ----------------------------------------------------------------------
+    // The token -> colour maps below are the one place colours live. The grid
+    // renderer (styleCell), the legend (renderLegend), the export resolver
+    // (tokenFill / baseColorForToken) and the shaded Excel writer all read
+    // these same objects, so they can never drift. The Colors module lets the
+    // user override any entry; overrides are merged into these live objects and
+    // persisted in localStorage, so a user palette survives reloads and feeds
+    // BOTH the in-editor shading AND the .xlsx export by construction.
+    // ======================================================================
+
+    // Frozen defaults (the original hardcoded palette). Reset restores from here.
+    const COLOR_DEFAULTS = Object.freeze({
+      dig: {
+        d:'#3fa7ff', h:'#70d6ff', u:'#ffd166', j:'#ffd166', i:'#fca311', r:'#90be6d', z:'#ff6b6b', n:'#8d99ae', M:'#9b5de5', v:'#577590', T:'#43aa8b', t:'#40916c', p:'#70e000', s:'#adb5bd', e:'#6c757d', F:'#4cc9f0', x:'#2b2d42'
+      },
+      place: {
+        a:'#8dd3c7', f:'#ffffb3', u:'#bebada', n:'#fb8072', y:'#80b1d3', r:'#fdb462', s:'#b3de69', w:'#fccde5', e:'#d9d9d9', b:'#bc80bd', h:'#ccebc5', l:'#ffed6f', z:'#1f78b4', S:'#6a3d9a', g:'#b15928', p:'#e31a1c', d:'#33a02c', c:'#ff7f00'
+      },
+      zone: {
+        m:'#8ecae6', b:'#219ebc', h:'#ffb703', n:'#fb8500', p:'#f94144', w:'#577590', j:'#90be6d', f:'#f3722c', s:'#f9c74f', o:'#43aa8b', D:'#4d908e', B:'#577590', a:'#277da1', d:'#f8961e', t:'#2a9d8f', T:'#9c6644', g:'#6a994e', c:'#b56576'
+      },
+      buildGroup: {
+        'Furniture':'#5e60ce',
+        'Roads & Plots':'#6c757d',
+        'Workshops':'#00b4d8',
+        'Furnaces':'#ffafcc',
+        'Siege Engines':'#ff8fab',
+        'Constructions':'#8d99ae',
+        'Track Stops':'#90be6d',
+        'Traps & Levers':'#f77f00',
+        'Constructed Tracks':'#43aa8b',
+        'Mechanical Power':'#4cc9f0'
+      },
+      burrow: { a:'#2b9348', e:'#d90429' },
+      query: { 'q':'#ff9500' }
+    });
+
+    // Live maps the rest of the app reads. Populated from defaults + overrides.
+    const COLOR_DIG = {};
+    const COLOR_PLACE = {};
+    const COLOR_ZONE = {};
+    const COLOR_BUILD_GROUP = {};
+    // Burrow/query are tiny (used directly in several helpers); keep live maps too.
+    const COLOR_BURROW = {};
+    const COLOR_QUERY = {};
+
+    // Individual colors for Furniture tokens (one swatch per token, palette-cycled
+    // by default; each can be overridden). FURNITURE_TOKEN_COLOR is rebuilt from
+    // the palette defaults + per-token overrides whenever colours change.
+    const FURNITURE_COLOR_PALETTE = [
+      '#ef4444','#f97316','#f59e0b','#eab308','#84cc16','#22c55e','#10b981','#14b8a6','#06b6d4','#0ea5e9',
+      '#3b82f6','#6366f1','#8b5cf6','#a855f7','#d946ef','#ec4899','#f43f5e','#fb7185','#fda4af','#fdba74',
+      '#fde047','#bef264','#86efac','#5eead4','#67e8f9','#93c5fd','#a5b4fc','#c4b5fd'
+    ];
+    let FURNITURE_TOKEN_COLOR = null; // base token -> hex color (rebuilt by rebuildColors)
+
+    // --- Colors module: persisted user overrides + apply/reset/save -----------
+    const Colors = {
+      LS_KEY: 'qf_colors_overrides_v1',
+      // overrides: { dig:{key:hex}, place:{...}, zone:{...}, buildGroup:{name:hex},
+      //              burrow:{key:hex}, query:{q:hex}, furniture:{base:hex} }
+      overrides: { dig:{}, place:{}, zone:{}, buildGroup:{}, burrow:{}, query:{}, furniture:{} },
+      load() {
+        try {
+          const raw = localStorage.getItem(this.LS_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            ['dig','place','zone','buildGroup','burrow','query','furniture'].forEach(k => {
+              if (parsed && parsed[k] && typeof parsed[k] === 'object') {
+                this.overrides[k] = Object.assign({}, parsed[k]);
+              }
+            });
+          }
+        } catch (_) { /* corrupt/unavailable storage: fall back to defaults */ }
+      },
+      save() {
+        try { localStorage.setItem(this.LS_KEY, JSON.stringify(this.overrides)); } catch (_) {}
+      },
+      // Default furniture colour for a base token (palette-cycled, deterministic).
+      defaultFurnitureColor(base) {
+        ensureFurnitureDefaults();
+        return FURNITURE_DEFAULT_COLOR[base] || FURNITURE_COLOR_PALETTE[0];
+      },
+      // Set one colour and apply+persist+re-render.
+      set(groupKey, entryKey, hex) {
+        if (!this.overrides[groupKey]) this.overrides[groupKey] = {};
+        this.overrides[groupKey][entryKey] = hex;
+        this.save(); rebuildColors(); refreshAfterColorChange();
+      },
+      // Reset one entry to its default.
+      resetEntry(groupKey, entryKey) {
+        if (this.overrides[groupKey]) delete this.overrides[groupKey][entryKey];
+        this.save(); rebuildColors(); refreshAfterColorChange();
+      },
+      resetAll() {
+        this.overrides = { dig:{}, place:{}, zone:{}, buildGroup:{}, burrow:{}, query:{}, furniture:{} };
+        this.save(); rebuildColors(); refreshAfterColorChange();
+      },
+      // Current effective colour for an entry (override or default).
+      effective(groupKey, entryKey) {
+        if (groupKey === 'furniture') {
+          return (this.overrides.furniture && this.overrides.furniture[entryKey]) || this.defaultFurnitureColor(entryKey);
+        }
+        const ov = this.overrides[groupKey];
+        if (ov && ov[entryKey]) return ov[entryKey];
+        return (COLOR_DEFAULTS[groupKey] && COLOR_DEFAULTS[groupKey][entryKey]) || null;
+      }
     };
-    const COLOR_PLACE = { // stockpile types
-      a:'#8dd3c7', f:'#ffffb3', u:'#bebada', n:'#fb8072', y:'#80b1d3', r:'#fdb462', s:'#b3de69', w:'#fccde5', e:'#d9d9d9', b:'#bc80bd', h:'#ccebc5', l:'#ffed6f', z:'#1f78b4', S:'#6a3d9a', g:'#b15928', p:'#e31a1c', d:'#33a02c', c:'#ff7f00'
-    };
-    const COLOR_ZONE = {
-      m:'#8ecae6', b:'#219ebc', h:'#ffb703', n:'#fb8500', p:'#f94144', w:'#577590', j:'#90be6d', f:'#f3722c', s:'#f9c74f', o:'#43aa8b', D:'#4d908e', B:'#577590', a:'#277da1', d:'#f8961e', t:'#2a9d8f', T:'#9c6644', g:'#6a994e', c:'#b56576'
-    };
-    const COLOR_BUILD_GROUP = {
-      'Furniture':'#5e60ce',
-      'Roads & Plots':'#6c757d',
-      'Workshops':'#00b4d8',
-      'Furnaces':'#ffafcc',
-      'Siege Engines':'#ff8fab',
-      'Constructions':'#8d99ae',
-      'Track Stops':'#90be6d',
-      'Traps & Levers':'#f77f00',
-      'Constructed Tracks':'#43aa8b',
-      'Mechanical Power':'#4cc9f0'
-    };
+
+    // Deterministic palette-cycled defaults for furniture tokens (computed once
+    // from BUILD_GROUPS so the default look matches the original editor).
+    let FURNITURE_DEFAULT_COLOR = null;
+    function ensureFurnitureDefaults() {
+      if (FURNITURE_DEFAULT_COLOR) return;
+      FURNITURE_DEFAULT_COLOR = {};
+      try {
+        const furn = (BUILD_GROUPS||[]).find(g => g.name === 'Furniture');
+        if (furn && Array.isArray(furn.items)) {
+          let idx = 0;
+          furn.items.forEach(([v]) => {
+            const base = stripPropsAndCfg(v);
+            if (!base) return;
+            if (FURNITURE_DEFAULT_COLOR[base]) return; // keep first assignment
+            FURNITURE_DEFAULT_COLOR[base] = FURNITURE_COLOR_PALETTE[idx % FURNITURE_COLOR_PALETTE.length];
+            idx++;
+          });
+        }
+      } catch (_) { FURNITURE_DEFAULT_COLOR = {}; }
+    }
+
+    // Rebuild the non-furniture live maps from defaults + overrides. Safe to call
+    // before BUILD_GROUPS exists (no dependency on it), so it runs inline at
+    // startup to guarantee colours on the very first paint.
+    function rebuildSimpleColors() {
+      const merge = (live, groupKey) => {
+        Object.keys(live).forEach(k => delete live[k]);
+        Object.assign(live, COLOR_DEFAULTS[groupKey] || {}, Colors.overrides[groupKey] || {});
+      };
+      merge(COLOR_DIG, 'dig');
+      merge(COLOR_PLACE, 'place');
+      merge(COLOR_ZONE, 'zone');
+      merge(COLOR_BUILD_GROUP, 'buildGroup');
+      merge(COLOR_BURROW, 'burrow');
+      merge(COLOR_QUERY, 'query');
+    }
+
+    // Full rebuild including furniture per-token colours. Furniture depends on
+    // BUILD_GROUPS, so the furniture part is also rebuilt lazily by
+    // ensureFurnitureTokenColors(); this forces an immediate rebuild after an
+    // override change (when BUILD_GROUPS is guaranteed to exist).
+    function rebuildColors() {
+      rebuildSimpleColors();
+      FURNITURE_TOKEN_COLOR = null; // force lazy rebuild from defaults + overrides
+      ensureFurnitureTokenColors();
+    }
+
+    // Load persisted overrides and populate the non-furniture maps right away so
+    // nothing renders with empty palettes. Furniture fills in lazily on first
+    // getBuildColorForToken() (by which point BUILD_GROUPS is defined).
+    Colors.load();
+    rebuildSimpleColors();
+
+    // --- Colour customization modal UI --------------------------------------
+    // Built dynamically from the default palettes so every shading colour is
+    // editable. A change calls Colors.set(...) which persists + re-renders.
+    function colorGroupSpecs() {
+      // [groupKey, title, entries:[ [entryKey, label], ... ] ]
+      const digLabels = {
+        d:'dig', h:'channel', u:'up stair', j:'down stair', i:'up/down stair', r:'ramp',
+        z:'remove up stairs', n:'remove construction', M:'marker/blueprint', v:'engraving visibility',
+        T:'carve track', t:'chop trees', p:'gather plants', s:'smooth', e:'engrave',
+        F:'fortification', x:'remove designation'
+      };
+      const placeLabels = {
+        a:'animal', f:'food', u:'furniture', n:'coins', y:'corpses', r:'refuse', s:'stone',
+        w:'wood', e:'gem', b:'bars/blocks', h:'cloth', l:'leather', z:'ammo', S:'sheets',
+        g:'finished goods', p:'weapons', d:'armor', c:'custom'
+      };
+      const zoneLabels = {
+        m:'meeting', b:'bedroom', h:'dining', n:'pen/pasture', p:'pit/pond', w:'water source',
+        j:'dungeon', f:'fishing', s:'sand', o:'office', D:'dormitory', B:'barracks', a:'archery',
+        d:'garbage', t:'animal training', T:'tomb', g:'gather fruit', c:'clay'
+      };
+      const mkEntries = (mapDefaults, labels) =>
+        Object.keys(mapDefaults).map(k => [k, (labels[k] ? `${labels[k]} (${k})` : k)]);
+      const specs = [
+        ['dig', 'Dig (#dig)', mkEntries(COLOR_DEFAULTS.dig, digLabels)],
+        ['place', 'Stockpiles (#place)', mkEntries(COLOR_DEFAULTS.place, placeLabels)],
+        ['zone', 'Zones (#zone)', mkEntries(COLOR_DEFAULTS.zone, zoneLabels)],
+        ['buildGroup', 'Build groups (#build)', Object.keys(COLOR_DEFAULTS.buildGroup).map(g => [g, g])],
+        ['burrow', 'Burrows (#burrow)', [['a','add (a)'], ['e','erase (e)']]]
+      ];
+      // Furniture per-token (built from BUILD_GROUPS); may be empty if unavailable.
+      try {
+        ensureFurnitureDefaults();
+        const keys = Object.keys(FURNITURE_DEFAULT_COLOR || {});
+        if (keys.length) {
+          specs.push(['furniture', 'Furniture (per token)', keys.map(k => [k, k])]);
+        }
+      } catch (_) {}
+      return specs;
+    }
+
+    function buildColorModal() {
+      const host = document.getElementById('colors-groups');
+      if (!host) return;
+      host.innerHTML = '';
+      colorGroupSpecs().forEach(([groupKey, title, entries]) => {
+        const g = document.createElement('div');
+        g.className = 'color-group';
+        const h = document.createElement('h3');
+        h.textContent = title;
+        g.appendChild(h);
+        const rowsWrap = document.createElement('div');
+        rowsWrap.className = 'color-rows';
+        entries.forEach(([entryKey, label]) => {
+          const row = document.createElement('div');
+          row.className = 'color-row';
+          const picker = document.createElement('input');
+          picker.type = 'color';
+          picker.value = (Colors.effective(groupKey, entryKey) || '#666666');
+          picker.addEventListener('input', () => Colors.set(groupKey, entryKey, picker.value));
+          const lab = document.createElement('span');
+          lab.className = 'clab';
+          lab.textContent = label;
+          lab.title = label;
+          const reset = document.createElement('button');
+          reset.className = 'creset';
+          reset.type = 'button';
+          reset.textContent = 'reset';
+          reset.title = 'Reset to default';
+          reset.addEventListener('click', () => {
+            Colors.resetEntry(groupKey, entryKey);
+            picker.value = (Colors.effective(groupKey, entryKey) || '#666666');
+          });
+          row.appendChild(picker);
+          row.appendChild(lab);
+          row.appendChild(reset);
+          rowsWrap.appendChild(row);
+        });
+        g.appendChild(rowsWrap);
+        host.appendChild(g);
+      });
+    }
+
+    function openColorModal() {
+      buildColorModal();
+      const m = document.getElementById('colors-modal');
+      if (m) m.classList.remove('hidden');
+    }
+    function closeColorModal() {
+      const m = document.getElementById('colors-modal');
+      if (m) m.classList.add('hidden');
+    }
+
+    // Wire the colour-related header buttons after the page (and all consts) are
+    // ready. Kept separate from the main tail wiring so it is self-contained.
+    window.addEventListener('load', () => {
+      rebuildColors(); // ensure furniture map is built once BUILD_GROUPS exists
+
+      const pictureBtn = document.getElementById('picture-toggle');
+      if (pictureBtn) {
+        const refreshPictureBtn = () => {
+          pictureBtn.classList.toggle('active', !!state.pictureView);
+          document.body.classList.toggle('picture-view', !!state.pictureView);
+        };
+        refreshPictureBtn();
+        pictureBtn.addEventListener('click', () => {
+          state.pictureView = !state.pictureView;
+          refreshPictureBtn();
+        });
+      }
+
+      const legendBtn = document.getElementById('legend-toggle');
+      if (legendBtn) {
+        const refreshLegendBtn = () => {
+          legendBtn.classList.toggle('active', !!state.legendVisible);
+          const legendEl = document.getElementById('legend');
+          if (legendEl) legendEl.classList.toggle('hidden', !state.legendVisible);
+          if (state.legendVisible) renderLegend();
+        };
+        refreshLegendBtn();
+        legendBtn.addEventListener('click', () => {
+          state.legendVisible = !state.legendVisible;
+          refreshLegendBtn();
+        });
+      }
+
+      const colorsBtn = document.getElementById('colors-btn');
+      if (colorsBtn) colorsBtn.addEventListener('click', openColorModal);
+      const colorsClose = document.getElementById('colors-close');
+      if (colorsClose) colorsClose.addEventListener('click', closeColorModal);
+      const colorsDone = document.getElementById('colors-done');
+      if (colorsDone) colorsDone.addEventListener('click', closeColorModal);
+      const colorsResetAll = document.getElementById('colors-reset-all');
+      if (colorsResetAll) colorsResetAll.addEventListener('click', () => { Colors.resetAll(); buildColorModal(); });
+      const colorsBackdrop = document.getElementById('colors-modal');
+      if (colorsBackdrop) colorsBackdrop.addEventListener('click', (e) => { if (e.target === colorsBackdrop) closeColorModal(); });
+    });
+
+    // Re-render everything that depends on colours after a change. The grid and
+    // the legend are the live colour surfaces; the sidebar tool swatches are
+    // built once at init and are not re-tinted here (minor; reopen a tab to
+    // rebuild). The Excel export reads the maps fresh on each export, so it
+    // always reflects the current palette with no extra work.
+    function refreshAfterColorChange() {
+      try { renderGrid(); } catch (_) {}
+      try { if (state.legendVisible) renderLegend(); } catch (_) {}
+    }
+
     let BUILD_TOKEN_GROUP = null; // token -> group name
     function ensureBuildTokenGroup() {
       if (BUILD_TOKEN_GROUP) return;
@@ -1945,29 +3339,13 @@ const state = {
       } catch (_) { BUILD_TOKEN_GROUP = {}; }
     }
 
-    // Individual colors for Furniture tokens
-    const FURNITURE_COLOR_PALETTE = [
-      '#ef4444','#f97316','#f59e0b','#eab308','#84cc16','#22c55e','#10b981','#14b8a6','#06b6d4','#0ea5e9',
-      '#3b82f6','#6366f1','#8b5cf6','#a855f7','#d946ef','#ec4899','#f43f5e','#fb7185','#fda4af','#fdba74',
-      '#fde047','#bef264','#86efac','#5eead4','#67e8f9','#93c5fd','#a5b4fc','#c4b5fd'
-    ];
-    let FURNITURE_TOKEN_COLOR = null; // token -> hex color
+    // Build FURNITURE_TOKEN_COLOR lazily from palette defaults + user overrides.
+    // Called from getBuildColorForToken (render time), by which point BUILD_GROUPS
+    // is defined. Idempotent: only rebuilds when null (after a colour change).
     function ensureFurnitureTokenColors() {
       if (FURNITURE_TOKEN_COLOR) return;
-      FURNITURE_TOKEN_COLOR = {};
-      try {
-        const furn = (BUILD_GROUPS||[]).find(g => g.name === 'Furniture');
-        if (furn && Array.isArray(furn.items)) {
-          let idx = 0;
-          furn.items.forEach(([v]) => {
-            const base = stripPropsAndCfg(v);
-            if (!base) return;
-            if (FURNITURE_TOKEN_COLOR[base]) return; // keep first assignment
-            const color = FURNITURE_COLOR_PALETTE[idx % FURNITURE_COLOR_PALETTE.length];
-            FURNITURE_TOKEN_COLOR[base] = color; idx++;
-          });
-        }
-      } catch (_) { FURNITURE_TOKEN_COLOR = {}; }
+      ensureFurnitureDefaults();
+      FURNITURE_TOKEN_COLOR = Object.assign({}, FURNITURE_DEFAULT_COLOR, Colors.overrides.furniture || {});
     }
 
     function getBuildGroupForToken(base) {
@@ -2036,8 +3414,8 @@ const state = {
     function getBurrowColorForToken(token) {
       const base = stripPropsAndCfg(token||'');
       const key = base.charAt(0);
-      if (key === 'a') return '#2b9348';
-      if (key === 'e') return '#d90429';
+      if (key === 'a') return COLOR_BURROW.a || '#2b9348';
+      if (key === 'e') return COLOR_BURROW.e || '#d90429';
       return null;
     }
 
@@ -2109,6 +3487,183 @@ const state = {
       return base === '' || base === '#' || base === '#>';
     }
 
+    // =====================================================================
+    // UNIFIED TOKEN -> COLOR RESOLVER  (export-ready view of the shading)
+    // ---------------------------------------------------------------------
+    // tokenFill(scopeId, token) -> { fill, text } | null
+    //   fill : single solid hex colour for the cell background
+    //   text : readable hex colour for the cell glyph/label
+    // Returns null for empty/placeholder cells (caller keeps the dark
+    // empty-cell styling). This is the ONE function the legend and the
+    // shaded Excel export call: Excel cell fills cannot be gradients, so this
+    // always resolves to a single solid colour (for a multi-type stockpile it
+    // picks the first type's colour, which is also what the grid gradient
+    // leads with). It reads the SAME COLOR_* maps as styleCell, so the grid
+    // and the export never drift apart, including user colour overrides.
+    // =====================================================================
+    const EMPTY_CELL_FILL = '#1f1f26';     // matches --cell (empty grid cell)
+    const TEXT_DARK  = '#111111';
+    const TEXT_LIGHT = '#ffffff';
+
+    // Pick black or white text for legibility on a given background.
+    function readableTextFor(bgHex) {
+      return luminanceOfHex(bgHex) > 0.6 ? TEXT_DARK : TEXT_LIGHT;
+    }
+
+    // Resolve a single solid fill colour for any token in any scope.
+    function tokenFillColor(scopeId, token) {
+      const s = String(token || '');
+      if (!s || isPlaceholderToken(s)) return null;
+      if (scopeId === 'dig') {
+        return getDigColorForToken(s);
+      }
+      if (scopeId === 'place') {
+        // Multi-type stockpiles (e.g. "yr") lead with the first type's colour;
+        // the grid draws a gradient but Excel/legend use this solid lead colour.
+        const base = stripPropsAndCfg(s);
+        const first = base.charAt(0);
+        return COLOR_PLACE[first] || '#444444';
+      }
+      if (scopeId === 'zone') {
+        return getZoneColorForToken(s);
+      }
+      if (scopeId === 'burrow') {
+        return getBurrowColorForToken(s) || '#577590';
+      }
+      if (scopeId === 'build') {
+        return getBuildColorForToken(stripPropsAndCfg(s));
+      }
+      if (scopeId === 'query') {
+        return COLOR_QUERY.q || '#ff9500';
+      }
+      return null;
+    }
+
+    // Public resolver: returns both fill and a readable text colour, or null.
+    function tokenFill(scopeId, token) {
+      const fill = tokenFillColor(scopeId, token);
+      if (!fill) return null;
+      return { fill, text: readableTextFor(fill) };
+    }
+
+    // Catalog of legend entries per tab: [token, label]. Reuses the same
+    // catalogs the tool palette is built from, so the legend never drifts.
+    function legendEntriesForTab(tabId) {
+      if (tabId === 'dig') {
+        return DIG_BASIC.filter(([v]) => v).map(([v,l]) => [v, l]);
+      }
+      if (tabId === 'place') {
+        return PLACE_STOCKPILES.filter(([v]) => v).map(([v,l]) => [v, l]);
+      }
+      if (tabId === 'zone') {
+        return ZONE_TYPES.filter(([v]) => v).map(([v,l]) => [v, l]);
+      }
+      if (tabId === 'burrow') {
+        return [['a','add'], ['e','erase']];
+      }
+      if (tabId === 'build') {
+        // One swatch per build group (groups share a colour, except Furniture).
+        return Object.keys(COLOR_BUILD_GROUP).map(g => ['__group__'+g, g]);
+      }
+      if (tabId === 'query') {
+        return [['q:settings','query']];
+      }
+      return [];
+    }
+
+    // Collect the tokens ACTUALLY present on the current grid (active tab + Z),
+    // so the legend lists what is on screen rather than the whole catalog.
+    function tokensPresentOnGrid() {
+      const tab = state.activeTab;
+      const mat = getMatrix(tab, state.activeZ);
+      const present = new Map(); // base token -> label
+      const lookup = {};
+      legendEntriesForTab(tab).forEach(([tok, lab]) => { lookup[tok] = lab; });
+      if (mat) {
+        for (let r = 0; r < mat.length; r++) {
+          for (let c = 0; c < mat[0].length; c++) {
+            const raw = mat[r][c];
+            if (!raw || isPlaceholderToken(raw)) continue;
+            if (tab === 'build') {
+              const base = stripPropsAndCfg(raw);
+              const grp = getBuildGroupForToken(base);
+              if (grp) present.set('__group__'+grp, grp);
+              continue;
+            }
+            const base = (tab === 'dig') ? stripDigMarkersAndPriority(raw) : stripPropsAndCfg(raw);
+            const key = (tab === 'place') ? base : base.charAt(0);
+            if (!key) continue;
+            const label = lookup[key] || lookup[base] || base;
+            present.set(key, label);
+          }
+        }
+      }
+      return Array.from(present.entries()); // [token, label]
+    }
+
+    function renderLegend() {
+      const el = document.getElementById('legend');
+      if (!el) return;
+      const collapsed = el.classList.contains('collapsed');
+      el.innerHTML = '';
+      const tab = state.activeTab;
+      const entries = tokensPresentOnGrid();
+      // Header with collapse control
+      const head = document.createElement('div');
+      head.className = 'lh';
+      const ht = document.createElement('span');
+      ht.textContent = 'On this grid';
+      const hbtn = document.createElement('button');
+      hbtn.type = 'button';
+      hbtn.setAttribute('aria-label', 'Collapse legend');
+      hbtn.innerHTML = '<i class="ti ti-chevron-up"></i>';
+      hbtn.addEventListener('click', () => {
+        el.classList.toggle('collapsed');
+        hbtn.innerHTML = el.classList.contains('collapsed') ? '<i class="ti ti-chevron-down"></i>' : '<i class="ti ti-chevron-up"></i>';
+      });
+      head.appendChild(ht); head.appendChild(hbtn);
+      el.appendChild(head);
+      const body = document.createElement('div');
+      body.className = 'legend-body';
+      entries.forEach(([token, label]) => {
+        let fill;
+        if (token.startsWith('__group__')) {
+          fill = COLOR_BUILD_GROUP[token.slice('__group__'.length)] || '#a99cd0';
+        } else {
+          const tf = tokenFill(tab, token);
+          fill = tf ? tf.fill : EMPTY_CELL_FILL;
+        }
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        const sw = document.createElement('span');
+        sw.className = 'swatch';
+        sw.style.background = fill;
+        const txt = document.createElement('span');
+        const glyph = token.startsWith('__group__') ? '' : (getShortSymbol(token, tab) || '');
+        txt.textContent = glyph ? (glyph + ' · ' + label) : label;
+        item.appendChild(sw);
+        item.appendChild(txt);
+        body.appendChild(item);
+      });
+      // Always include the chrome overlays as backup channels.
+      [['mirror axis','var(--axis)'], ['selection','var(--sel)'], ['dig overlay','var(--dig)']].forEach(([lab, col]) => {
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = col;
+        const txt = document.createElement('span'); txt.textContent = lab;
+        item.appendChild(sw); item.appendChild(txt); body.appendChild(item);
+      });
+      if (!entries.length) {
+        const empty = document.createElement('div');
+        empty.className = 'legend-item';
+        empty.style.color = 'var(--hint)';
+        empty.textContent = 'No tokens on this grid yet.';
+        body.insertBefore(empty, body.firstChild);
+      }
+      if (collapsed) el.classList.add('collapsed');
+      el.appendChild(body);
+    }
+
     function styleCell(td, val, scopeId) {
       // reset
       td.style.background = 'var(--cell)';
@@ -2172,7 +3727,7 @@ const state = {
       if (scopeId === 'burrow') {
         const base = stripPropsAndCfg(s);
         const key = base.charAt(0);
-        const col = key === 'a' ? '#2b9348' : key === 'e' ? '#d90429' : '#577590';
+        const col = key === 'a' ? (COLOR_BURROW.a || '#2b9348') : key === 'e' ? (COLOR_BURROW.e || '#d90429') : '#577590';
         td.style.background = col; ensureReadableText(td, col);
         return;
       }
@@ -2183,7 +3738,8 @@ const state = {
         td.style.background = col; ensureReadableText(td, col); return;
       }
       if (scopeId === 'query') {
-        td.style.background = '#ff9500'; td.style.color = '#111';
+        const col = COLOR_QUERY.q || '#ff9500';
+        td.style.background = col; ensureReadableText(td, col);
         return;
       }
     }
@@ -2247,7 +3803,7 @@ const state = {
 
     function detectHeaderLine(line) {
       const first = firstCSVCell(line || '');
-      const m = /^#(dig|build|place|zone|burrow|query)\b/i.exec(first);
+      const m = /^#(dig|build|place|zone|burrow|query|meta)\b/i.exec(first);
       return m ? `#${m[1].toLowerCase()}` : null;
     }
 
@@ -2282,7 +3838,7 @@ const state = {
       if (!header) return state.activeTab;
       const mode = /^#(dig|build|place|zone|burrow|query)\b/i.exec(header)?.[1]?.toLowerCase();
       const t = Tabs.find(t => t.id === mode);
-      return t ? t.id : state.activeTab;
+      return t ? t.id : null; // retired/unknown modes (e.g. #query, #meta) -> skip on import
     }
 
     // Wire header controls
@@ -2315,6 +3871,9 @@ const state = {
     document.getElementById('cleargrid').addEventListener('click', () => {
       // Clear only current tab & z; record as a single action
       const mat = getMatrix(state.activeTab, state.activeZ);
+      let hasContent = false;
+      for (let r = 0; r < mat.length && !hasContent; r++) { for (let c = 0; c < mat[0].length; c++) { if (mat[r][c]) { hasContent = true; break; } } }
+      if (hasContent && !confirm('Clear the current layer? This removes all tokens on this tab and Z-level. You can undo with Ctrl+Z.')) return;
       historyBegin();
       for (let r=0; r<mat.length; r++) {
         for (let c=0; c<mat[0].length; c++) {
@@ -2463,6 +4022,8 @@ const state = {
       state.pasteSkipBlanks = !!pasteSkipCb.checked;
       if (state.pasteMode) applyPastePreviewFromHover();
     });
+    // Paste a whole other blueprint into this one (stamp its current-tab grid).
+    document.getElementById('paste-bp-btn')?.addEventListener('click', () => startPasteFromBlueprint());
     // Transform controls
     const rotBtn = document.getElementById('rotate-selection');
     const mxBtn = document.getElementById('mirror-x-selection');
@@ -2546,6 +4107,126 @@ const state = {
       });
       download('quickfort-blueprints.csv', bundle);
     });
+    document.getElementById('downloadxlsx').addEventListener('click', () => {
+      exportTabXlsx(state.activeTab);
+    });
+    document.getElementById('exportallxlsx').addEventListener('click', () => {
+      exportAllXlsx();
+    });
+
+    // Multi-sheet workbook button + blueprint bar wiring
+    document.getElementById('exportworkbook').addEventListener('click', () => {
+      exportWorkbookXlsx();
+    });
+    document.getElementById('loadworkbook').addEventListener('click', () => {
+      document.getElementById('workbookinput').click();
+    });
+    document.getElementById('workbookinput').addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try { importWorkbookFromArrayBuffer(reader.result, f.name); }
+        catch (err) { console.error('Failed to load workbook:', err); alert('Could not read that .xlsx workbook.'); }
+        finally { e.target.value = ''; }
+      };
+      reader.readAsArrayBuffer(f);
+    });
+    (function wireBlueprintBar(){
+      const sel = document.getElementById('bp-select');
+      if (sel) sel.addEventListener('change', () => switchBlueprint(parseInt(sel.value, 10) || 0));
+      document.getElementById('bp-add')?.addEventListener('click', addBlueprint);
+      document.getElementById('bp-tab-add')?.addEventListener('click', addBlueprint);
+      document.getElementById('bp-tab-dup')?.addEventListener('click', duplicateBlueprint);
+      document.getElementById('bp-tab-rename')?.addEventListener('click', renameBlueprint);
+      document.getElementById('bp-tab-del')?.addEventListener('click', deleteBlueprint);
+      document.getElementById('layers-add')?.addEventListener('click', () => document.getElementById('z-add')?.click());
+      document.getElementById('layers-del')?.addEventListener('click', () => document.getElementById('z-del')?.click());
+      document.getElementById('bp-dup')?.addEventListener('click', duplicateBlueprint);
+      document.getElementById('bp-rename')?.addEventListener('click', renameBlueprint);
+      document.getElementById('bp-del')?.addEventListener('click', deleteBlueprint);
+    })();
+
+    // ---- Top-bar Export / Import dropdown menus ----
+    (function wireTopMenus(){
+      const menus = [
+        { btn: 'export-btn', menu: 'export-menu' },
+        { btn: 'import-btn', menu: 'import-menu' },
+      ];
+      function closeAll(except) {
+        menus.forEach(m => {
+          const menu = document.getElementById(m.menu);
+          const btn = document.getElementById(m.btn);
+          if (!menu || menu === except) return;
+          menu.classList.add('hidden');
+          if (btn) btn.setAttribute('aria-expanded', 'false');
+        });
+      }
+      menus.forEach(m => {
+        const btn = document.getElementById(m.btn);
+        const menu = document.getElementById(m.menu);
+        if (!btn || !menu) return;
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const willOpen = menu.classList.contains('hidden');
+          closeAll(willOpen ? menu : null);
+          menu.classList.toggle('hidden', !willOpen);
+          btn.setAttribute('aria-expanded', String(willOpen));
+        });
+        // Clicking any action button inside closes the menu (after its own handler).
+        menu.querySelectorAll('button').forEach(b => {
+          b.addEventListener('click', () => { menu.classList.add('hidden'); btn.setAttribute('aria-expanded', 'false'); });
+        });
+      });
+      // Export-option checkboxes: toggle state flags and keep the menu open.
+      [['opt-area-expand','exportAreaExpand'], ['opt-bare-priorities','exportBarePriorities']].forEach(([id, key]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.checked = !!state[key];
+        el.addEventListener('change', () => { state[key] = el.checked; });
+        el.addEventListener('click', (e) => e.stopPropagation());
+      });
+      document.addEventListener('click', (e) => {
+        if (e.target.closest && e.target.closest('.menu-wrap')) return;
+        closeAll(null);
+      });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAll(null); });
+    })();
+
+    // ---- Collapsible right panel ----
+    (function wirePanelCollapse(){
+      const main = document.querySelector('main');
+      const btn = document.getElementById('panel-toggle');
+      if (!main) return;
+      const KEY = 'qf_panel_collapsed';
+      const icon = () => { const i = btn && btn.querySelector('i'); if (i) i.className = 'ti ' + (main.classList.contains('panel-collapsed') ? 'ti-chevron-left' : 'ti-chevron-right'); };
+      const set = (collapsed) => { main.classList.toggle('panel-collapsed', collapsed); icon(); try { localStorage.setItem(KEY, collapsed ? '1' : '0'); } catch (_) {} try { renderGrid(); } catch (_) {} };
+      btn?.addEventListener('click', () => set(!main.classList.contains('panel-collapsed')));
+      let init = false; try { init = localStorage.getItem(KEY) === '1'; } catch (_) {}
+      if (init) main.classList.add('panel-collapsed');
+      icon();
+    })();
+
+    // ---- Resizable sidebar ----
+    (function wireSidebarResize(){
+      const handle = document.getElementById('sidebar-resizer');
+      const mainEl = document.querySelector('main');
+      if (!handle || !mainEl) return;
+      let dragging = false;
+      handle.addEventListener('mousedown', (e) => { e.preventDefault(); dragging = true; document.body.style.userSelect = 'none'; });
+      document.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        const rect = mainEl.getBoundingClientRect();
+        let w = rect.right - e.clientX; // panel is on the right now
+        w = Math.max(230, Math.min(560, w));
+        mainEl.style.setProperty('--sidebar-w', w + 'px');
+      });
+      document.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false; document.body.style.userSelect = '';
+        try { renderGrid(); } catch (_) {}
+      });
+    })();
 
 
     function findMaxDimensionsOfSection(section) {
@@ -2620,6 +4301,7 @@ const state = {
     // Import a single sheet (matrix rows) into multi-z layers using #> / #< rows.
     // In preserve mode, also recognizes #0N to restore zeroIndex and keeps exact order.
     function importSectionToMultiZ(tabId, rows) {
+      if (!tabId || !Tabs.some(t => t.id === tabId)) return; // skip retired/unknown modes (e.g. #query)
       let currentZ = 0;
       let savedZero = null;
       const matrices = [makeMatrix(state.rows, state.cols)];
@@ -2720,18 +4402,18 @@ const state = {
     const BUILD_GROUPS = [
       { name: 'Furniture', items: [
         ['a','armor stand'], ['b','bed'], ['c','seat'], ['n','burial receptacle'], ['d','door'], ['x','floodgate'], ['H','floor hatch'], ['W','wall grate'], ['G','floor grate'], ['B','vertical bars'], ['~b','floor bars'], ['f','cabinet'], ['h','container'], ['r','weapon rack'], ['~c','bookcase'], ['F','display furniture'], ['I','buildable instrument'],
-        ['s','statue'], ['t','table'], ['l','well'], ['y','glass window'], ['Y','gem window'], ['A','archery target'], ['m','animal trap'], ['v','restraint'], ['j','cage'], ['N','nest box'], ['~h','hive'], ['~a','offering place']
+        ['s','statue'], ['~s','slab'], ['t','table'], ['l','well'], ['y','glass window'], ['Y','gem window'], ['A','archery target'], ['R','traction bench'], ['m','animal trap'], ['v','restraint'], ['j','cage'], ['N','nest box'], ['~h','hive'], ['~a','offering place']
       ]},
       { name: 'Roads & Plots', items: [ ['p','farm plot'], ['o','paved road'], ['O','dirt road'], ['k','vermin catcher'] ] },
       { name: 'Workshops', items: [ ['we','leather works'], ['wq','quern'], ['wM','millstone'], ['wo','loom'], ['wk','clothier'], ['wb','bowyer'], ['wc','carpenter'], ['wf','metalsmith'], ['wv','magma forge'], ['wj','jeweler'], ['wm','stoneworker'], ['wu','butcher'], ['wn','tanner'], ['wr','craftsdwarf'], ['ws','siege workshop'], ['wt','mechanic'], ['wl','still'], ['ww','farmer'], ['wz','kitchen'], ['wh','fishery'], ['wy','ashery'], ['wd','dyer'], ['wS','soap maker'], ['wp','screw press'] ]},
       { name: 'Furnaces', items: [ ['ew','wood furnace'], ['es','smelter'], ['el','magma smelter'], ['eg','glass furnace'], ['ea','magma glass furnace'], ['ek','kiln'], ['en','magma kiln'] ] },
       { name: 'Siege Engines', items: [ ['ib','ballista'], ['it','bolt thrower'], ['ic','catapult'] ] },
-      { name: 'Constructions', items: [ ['Cw','wall'], ['CW','reinforced wall'], ['Cf','floor'], ['Cr','ramp'], ['Cu','up stair'], ['Cd','down stair'], ['Cx','up/down stair'], ['CF','fortification'], ['S','support'], ['D','trade depot'], ['g','bridge (retracting)'], ['gw','bridge (raise west)'], ['gd','bridge (raise south)'], ['gx','bridge (raise east)'], ['ga','bridge (raise north)'] ] },
+      { name: 'Constructions', items: [ ['Cw','wall'], ['CW','reinforced wall'], ['Cf','floor'], ['Cr','ramp'], ['Cu','up stair'], ['Cd','down stair'], ['Cx','up/down stair'], ['CF','fortification'], ['S','support'], ['D','trade depot'], ['g','bridge (retracting)'], ['gw','bridge (raises to north)'], ['gd','bridge (raises to east)'], ['gx','bridge (raises to south)'], ['ga','bridge (raises to west)'] ] },
       { name: 'Track Stops', items: [ ['trackstop','track stop'], ['trackstopN','track stop N'], ['trackstopS','track stop S'], ['trackstopE','track stop E'], ['trackstopW','track stop W'] ] },
       { name: 'Traps & Levers', items: [ ['Ts','stone-fall trap'], ['Tw','weapon trap'], ['Tl','lever'], ['Tp','pressure plate'], ['Tc','cage trap'], ['TS','upright spear/spike'] ] },
       { name: 'Constructed Tracks', items: [ ['trackN','track N'], ['trackS','track S'], ['trackE','track E'], ['trackW','track W'], ['trackNS','track NS'], ['trackEW','track EW'], ['trackNE','track NE'], ['trackNW','track NW'], ['trackSE','track SE'], ['trackSW','track SW'], ['trackNSE','track NSE'], ['trackNSW','track NSW'], ['trackNEW','track NEW'], ['trackSEW','track SEW'], ['trackNSEW','track NSEW'], ['trackrampN','ramp N'], ['trackrampS','ramp S'], ['trackrampE','ramp E'], ['trackrampW','ramp W'], ['trackrampNS','ramp NS'], ['trackrampEW','ramp EW'], ['trackrampNE','ramp NE'], ['trackrampNW','ramp NW'], ['trackrampSE','ramp SE'], ['trackrampSW','ramp SW'], ['trackrampNSE','ramp NSE'], ['trackrampNSW','ramp NSW'], ['trackrampNEW','ramp NEW'], ['trackrampSEW','ramp SEW'], ['trackrampNSEW','ramp NSEW'] ] }
       ,{ name: 'Mechanical Power', items: [
-        ['Msu','screw pump (from south)'], ['Msk','screw pump (from north)'], ['Msm','screw pump (from east)'], ['Msh','screw pump (from west)'],
+        ['Msu','screw pump (pumps from north)'], ['Msk','screw pump (pumps from east)'], ['Msm','screw pump (pumps from south)'], ['Msh','screw pump (pumps from west)'],
         ['Mw','water wheel (vertical)'], ['Mws','water wheel (horizontal)'], ['Mg','gear assembly'],
         ['Mh','axle (horizontal E-W)'], ['Mhs','axle (horizontal N-S)'], ['Mv','axle (vertical)'],
         ['rollerNS','roller pushing south'], ['rollerEW','roller pushing west'], ['rollerSN','roller pushing north'], ['rollerWE','roller pushing east']
@@ -2739,17 +4421,21 @@ const state = {
     ];
 
     function buildToolButton(val, label) {
-      const d = document.createElement('div');
+      const d = document.createElement('button');
+      d.type = 'button';
       d.className = 'tool';
       d.setAttribute('data-tool', val);
+      d.setAttribute('aria-label', (label||val||'eraser'));
       d.innerHTML = `${label||val}<small>${val}</small>`;
       return d;
     }
 
     function buildColoredToolButton(val, label, color) {
-      const d = document.createElement('div');
+      const d = document.createElement('button');
+      d.type = 'button';
       d.className = 'tool';
       d.setAttribute('data-tool', val);
+      d.setAttribute('aria-label', (label||val||'eraser'));
       const title = document.createElement('div');
       title.textContent = label || val;
       const small = document.createElement('small');
@@ -2763,9 +4449,11 @@ const state = {
     }
 
     function buildColoredBuildToolButton(val, label) {
-      const d = document.createElement('div');
+      const d = document.createElement('button');
+      d.type = 'button';
       d.className = 'tool';
       d.setAttribute('data-tool', val);
+      d.setAttribute('aria-label', (label||val));
       const title = document.createElement('div');
       title.textContent = label || val;
       const small = document.createElement('small');
@@ -3182,23 +4870,6 @@ const state = {
           } catch (e) { console.error('Trim Z failed', e); }
         });
       }
-      // Syntax display toggle
-      const syntaxBtn = document.getElementById('syntax-toggle');
-      if (syntaxBtn) {
-        const refreshSyntaxBtn = () => {
-          const full = !!state.showFullSyntax;
-          syntaxBtn.classList.toggle('active', full);
-          syntaxBtn.textContent = full ? 'Full Syntax' : 'Color Only';
-          syntaxBtn.title = full ? 'Showing full syntax in cells' : 'Showing color-only cells';
-        };
-        refreshSyntaxBtn();
-        syntaxBtn.addEventListener('click', () => {
-          state.showFullSyntax = !state.showFullSyntax;
-          refreshSyntaxBtn();
-          // Re-render grid and previews to apply text change
-          renderGrid();
-        });
-      }
       // Mirror toggles
       const mvToggle = document.getElementById('mirror-v-toggle');
       const mhToggle = document.getElementById('mirror-h-toggle');
@@ -3218,12 +4889,163 @@ const state = {
       }
       // Update axes overlay on resize as well
       window.addEventListener('resize', () => { renderAxesOverlay(); });
+      // Seed the workbook with the current grid as the first blueprint.
+      if (!Workbook.blueprints.length) {
+        Workbook.blueprints = [ snapshotActiveBlueprint('Blueprint 1') ];
+        Workbook.activeIndex = 0;
+      }
+      renderBlueprintBar();
       // Initialize z-label and ensure first render uses active z
       ensureGrids();
       updateZLabel();
+      updateGridSizeBadge();
       renderGrid();
     }
+    // ---- Left icon tool rail (drives the existing shape/mirror/brush controls) ----
+    (function wireToolRail(){
+      const rail = document.querySelector('.tool-rail');
+      const shapeSel = document.getElementById('shape-select');
+      if (!rail || !shapeSel) return;
+      const outline = document.getElementById('shape-outline');
+      const mv = document.getElementById('mirror-v-toggle');
+      const mh = document.getElementById('mirror-h-toggle');
+      const brush = document.getElementById('brush-size');
+      const fire = (el, type) => el && el.dispatchEvent(new Event(type, { bubbles: true }));
+      // shape icons -> drive #shape-select
+      rail.querySelectorAll('[data-shape]').forEach(btn => {
+        btn.addEventListener('click', () => { shapeSel.value = btn.getAttribute('data-shape'); fire(shapeSel, 'change'); syncShape(); });
+      });
+      function syncShape(){ rail.querySelectorAll('[data-shape]').forEach(b => b.classList.toggle('active', b.getAttribute('data-shape') === shapeSel.value)); }
+      shapeSel.addEventListener('change', syncShape);
+      // toggle helper: rail button mirrors a checkbox
+      function bindToggle(btnId, cb){
+        const b = document.getElementById(btnId);
+        if (!b || !cb) return;
+        b.addEventListener('click', () => { cb.checked = !cb.checked; fire(cb, 'change'); b.classList.toggle('active', cb.checked); });
+        cb.addEventListener('change', () => b.classList.toggle('active', cb.checked));
+        b.classList.toggle('active', cb.checked);
+      }
+      bindToggle('rail-hollow', outline);
+      bindToggle('rail-mv', mv);
+      bindToggle('rail-mh', mh);
+      // brush stepper -> drive #brush-size
+      const val = document.getElementById('rail-brush-val');
+      const syncBrush = () => { if (val && brush) val.textContent = brush.value; };
+      const stepBrush = (d) => { if (!brush) return; let v = (parseInt(brush.value, 10) || 1) + d; v = Math.max(1, Math.min(25, v)); brush.value = String(v); fire(brush, 'input'); fire(brush, 'change'); syncBrush(); };
+      document.getElementById('rail-brush-dec')?.addEventListener('click', () => stepBrush(-1));
+      document.getElementById('rail-brush-inc')?.addEventListener('click', () => stepBrush(1));
+      brush?.addEventListener('change', syncBrush);
+      syncShape(); syncBrush();
+    })();
+
+    // ---- Retire the bottom bar: I/O to the top bar, rest to palette/rail ----
+    (function relocateBottomBar(){
+      const main = document.querySelector('main');
+      if (main) {
+        const dock = document.createElement('div');
+        dock.id = 'io-dock';
+        ['import-btn', 'export-btn', 'help-btn'].forEach(id => {
+          const w = document.getElementById(id)?.closest('.menu-wrap');
+          if (w) { w.classList.add('up'); dock.appendChild(w); } // bottom dock -> menus open upward
+        });
+        main.appendChild(dock);
+      }
+      document.getElementById('bp-bar')?.remove();
+      // Hide the bottom status bar; its controls stay in the DOM and are reached
+      // via the command palette and the rail Select tool.
+      document.querySelector('.statusbar')?.classList.add('hidden');
+      // Search pill opens the command palette.
+      document.getElementById('cmdk-pill')?.addEventListener('click', () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+      });
+      // Rail Select tool proxies the (hidden) selection toggle.
+      const selBtn = document.getElementById('rail-select');
+      const selToggle = document.getElementById('select-toggle');
+      if (selBtn && selToggle) {
+        selBtn.addEventListener('click', () => { selToggle.click(); selBtn.classList.toggle('active', selToggle.classList.contains('active')); });
+      }
+    })();
+
+    // ---- Command palette (Ctrl K / Ctrl P) ----
+    (function wireCommandPalette(){
+      const overlay = document.getElementById('cmdk');
+      const input = document.getElementById('cmdk-input');
+      const list = document.getElementById('cmdk-list');
+      if (!overlay || !input || !list) return;
+      const click = id => () => document.getElementById(id)?.click();
+      const actions = [
+        { label: 'Mode: Dig', run: () => setActiveTab('dig') },
+        { label: 'Mode: Build', run: () => setActiveTab('build') },
+        { label: 'Mode: Stockpiles', run: () => setActiveTab('place') },
+        { label: 'Mode: Zones', run: () => setActiveTab('zone') },
+        { label: 'Mode: Burrows', run: () => setActiveTab('burrow') },
+        { label: 'Export: download CSV (current tab)', run: click('downloadcsv') },
+        { label: 'Export: copy CSV to clipboard', run: click('copycsv') },
+        { label: 'Export: current tab as .xlsx', run: click('downloadxlsx') },
+        { label: 'Export: all tabs (CSV)', run: click('exportall') },
+        { label: 'Export: all tabs .xlsx', run: click('exportallxlsx') },
+        { label: 'Export: whole workbook .xlsx', run: click('exportworkbook') },
+        { label: 'Import: load CSV', run: click('loadcsv') },
+        { label: 'Import: load workbook (.xlsx)', run: click('loadworkbook') },
+        { label: 'Z-level: add', run: click('z-add') },
+        { label: 'Z-level: delete current', run: click('z-del') },
+        { label: 'Z-level: trim empty', run: click('trim-empty-z-btn') },
+        { label: 'View: toggle preview', run: click('preview-toggle-btn') },
+        { label: 'View: color only', run: click('picture-toggle') },
+        { label: 'View: toggle legend', run: click('legend-toggle') },
+        { label: 'Colors: customize…', run: click('colors-btn') },
+        { label: 'Grid: clear', run: click('cleargrid') },
+        { label: 'Blueprint: add', run: click('bp-tab-add') },
+        { label: 'Blueprint: duplicate', run: click('bp-tab-dup') },
+        { label: 'Blueprint: rename', run: click('bp-tab-rename') },
+        { label: 'Blueprint: delete', run: click('bp-tab-del') },
+        { label: 'Edit: undo', run: click('undo-btn') },
+        { label: 'Edit: redo', run: click('redo-btn') },
+        { label: 'Selection: toggle select mode', run: click('select-toggle') },
+        { label: 'Selection: paste', run: click('paste-selection') },
+        { label: 'Selection: clear', run: click('clear-selection') },
+        { label: 'Selection: toggle skip blanks', run: click('paste-skip-blanks') },
+        { label: 'Blueprint: stamp another into this one', run: click('paste-bp-btn') },
+      ];
+      let filtered = actions.slice();
+      let sel = 0;
+      function render() {
+        list.innerHTML = '';
+        if (!filtered.length) { list.innerHTML = '<div class="cmdk-empty">No matching commands</div>'; return; }
+        filtered.forEach((a, i) => {
+          const el = document.createElement('div');
+          el.className = 'cmdk-item' + (i === sel ? ' sel' : '');
+          el.textContent = a.label;
+          el.addEventListener('mousedown', (e) => { e.preventDefault(); choose(i); });
+          list.appendChild(el);
+        });
+      }
+      function filter() {
+        const q = input.value.trim().toLowerCase();
+        filtered = q ? actions.filter(a => a.label.toLowerCase().includes(q)) : actions.slice();
+        sel = 0; render();
+      }
+      function open() { overlay.classList.add('open'); input.value = ''; filter(); setTimeout(() => input.focus(), 0); }
+      function close() { overlay.classList.remove('open'); }
+      function choose(i) { const a = filtered[i]; close(); if (a) setTimeout(a.run, 0); }
+      input.addEventListener('input', filter);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, filtered.length - 1); render(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
+        else if (e.key === 'Enter') { e.preventDefault(); choose(sel); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(); }
+      });
+      overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+      document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'p')) {
+          e.preventDefault();
+          overlay.classList.contains('open') ? close() : open();
+        }
+      });
+    })();
+
     init();
+    /* build: export options + retired #query */
   </script>
 </body>
 </html>
