@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>fortplanner tests</title>
+<style>
+  :root {
+    --ok: #2e7d32; --okbg: #e8f5e9;
+    --bad: #c62828; --badbg: #ffebee;
+    --ink: #1a1a1a; --muted: #666; --line: #ddd; --bg: #fafafa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; color: var(--ink); background: var(--bg); }
+  header { padding: 16px 20px; border-bottom: 1px solid var(--line); background: #fff; position: sticky; top: 0; }
+  h1 { margin: 0 0 4px; font-size: 18px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  #summary { margin-top: 10px; font-weight: 600; font-size: 15px; padding: 8px 12px; border-radius: 6px; display: inline-block; }
+  #summary.pass { background: var(--okbg); color: var(--ok); }
+  #summary.fail { background: var(--badbg); color: var(--bad); }
+  #summary.run { background: #eef; color: #334; }
+  main { padding: 12px 20px 60px; }
+  .group { margin: 18px 0 6px; font-weight: 700; font-size: 13px; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); }
+  .row { display: flex; gap: 10px; padding: 5px 10px; border-bottom: 1px solid #f0f0f0; align-items: baseline; }
+  .tag { font-weight: 700; width: 46px; flex: 0 0 auto; font-size: 12px; }
+  .row.ok .tag { color: var(--ok); }
+  .row.bad { background: var(--badbg); }
+  .row.bad .tag { color: var(--bad); }
+  .name { flex: 1; }
+  .detail { color: var(--bad); font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; margin-top: 3px; }
+  .banner { margin: 20px; padding: 16px; border: 1px solid var(--bad); background: var(--badbg); border-radius: 8px; color: var(--bad); }
+  .banner code { background: #fff; padding: 1px 6px; border-radius: 4px; }
+  /* keep the editor laid out but out of the way */
+  #app { position: fixed; right: 0; bottom: 0; width: 900px; height: 600px; border: 0; opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>fortplanner test harness</h1>
+  <div class="sub">Loads <code>quickfort-grid-editor.html</code>, drives its real functions, and checks output against what the editor promises. Runs automatically on open.</div>
+  <div id="summary" class="run">Running...</div>
+</header>
+<main id="out"></main>
+<iframe id="app" src="quickfort-grid-editor.html"></iframe>
+
+<script>
+// ---------- tiny test framework ----------
+const results = [];   // {group, name, ok, detail}
+let curGroup = '';
+let finished = false; // set true once a run renders; drives the watchdog below
+function group(g) { curGroup = g; }
+function test(name, fn) {
+  try { fn(); results.push({ group: curGroup, name, ok: true }); }
+  catch (e) { results.push({ group: curGroup, name, ok: false, detail: String(e && e.message || e) }); }
+}
+function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+function eq(a, b, msg) {
+  if (a !== b) throw new Error((msg ? msg + ': ' : '') + `expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
+}
+function deepEq(a, b, msg) {
+  const sa = JSON.stringify(a), sb = JSON.stringify(b);
+  if (sa !== sb) throw new Error((msg ? msg + ': ' : '') + `expected ${sb}, got ${sa}`);
+}
+
+// ---------- harness wiring ----------
+function expose(win) {
+  // Run inside the editor's own global scope so we can grab its lexical
+  // bindings (state, Tabs) plus all the top-level function declarations.
+  const names = [
+    'state','Tabs','makeMatrix','ensureGrids','ensureHistory','getMatrix','setMatrix',
+    'setCellValue','setGridSize','tabToMultiZCSV','tabToMultiZCSVTrimmed','matrixToCSV',
+    'matrixRowsToCSVLines','rotateMatrixCW','mirrorMatrixX','mirrorMatrixY','floodFill',
+    'rectCells','lineCells','circleCells','bresenhamLine','pasteBufferAt','copySelectedArea',
+    'historyBegin','historyCommit','historyUndo','historyRedo'
+  ];
+  const s = win.document.createElement('script');
+  s.textContent = 'window.__qf = {' + names.map(n => `${n}:typeof ${n}!=="undefined"?${n}:undefined`).join(',') + '};';
+  win.document.body.appendChild(s);
+  return win.__qf;
+}
+
+function setup(qf, rows = 3, cols = 3, zCount = 1) {
+  const st = qf.state;
+  st.rows = rows; st.cols = cols; st.zCount = zCount;
+  st.activeZ = 0; st.zeroIndex = 0; st.activeTab = 'dig';
+  st.preserveZOrder = true;
+  st.currentAction = null; st.isUndoRedo = false; st.copyBuffer = null;
+  st.selectionRect = null; st.pasteSkipBlanks = false;
+  st.mirrorVEnabled = false; st.mirrorHEnabled = false;
+  st.grids = {}; st.history = {};
+  qf.ensureGrids(); qf.ensureHistory();
+}
+
+// Show a prominent message above the results (errors, how-to-run hints).
+function banner(html) {
+  const b = document.createElement('div');
+  b.className = 'banner';
+  b.innerHTML = html;
+  document.body.insertBefore(b, document.getElementById('out'));
+}
+function setStatus(text, cls) {
+  const s = document.getElementById('summary');
+  if (s) { s.className = cls || 'run'; s.textContent = text; }
+}
+
+function run(win) {
+  finished = true; // we reached the runner; stop the watchdog
+  let qf;
+  try {
+    qf = expose(win);
+    if (!qf || typeof qf.tabToMultiZCSV !== 'function') throw new Error('internals not reachable');
+  } catch (e) {
+    setStatus('Could not reach the editor', 'fail');
+    banner('Could not reach the editor across the iframe (this happens on <code>file://</code> in Chrome/Firefox).<br><br>' +
+      'Serve the folder over HTTP and reload:<br><br>' +
+      '<code>cd fortplanner</code><br><code>python -m http.server 8000</code><br><br>' +
+      'then open <code>http://localhost:8000/tests.html</code>.<br><br>Detail: ' + String(e && e.message || e));
+    return;
+  }
+  setStatus('Editor loaded, running tests...');
+  try {
+    defineTests(qf, win);
+  } catch (e) {
+    // A throw OUTSIDE a test() (e.g. in setup) used to silently halt the whole
+    // run with no output. Surface it, then render whatever did run.
+    banner('A test threw while being set up, which stops the run early. Fix this first.<br><br>Detail: ' + String(e && e.message || e));
+  }
+  render();
+}
+
+// ---------- the tests ----------
+function defineTests(qf, win) {
+
+  group('CSV: low-level encoding');
+  test('matrixToCSV joins rows + header', () => {
+    eq(qf.matrixToCSV([['a','b'],['c','d']], '#dig'), '#dig\na,b\nc,d');
+  });
+  test('matrixToCSV quotes cells containing commas', () => {
+    eq(qf.matrixToCSV([['a,b','c']], '#dig'), '#dig\n"a,b",c');
+  });
+  test('matrixToCSV doubles embedded quotes (RFC 4180)', () => {
+    eq(qf.matrixToCSV([['a"b']], '#dig'), '#dig\n"a""b"');
+  });
+  test('matrixToCSV renders empty/null cells as blank, not "null"', () => {
+    eq(qf.matrixToCSV([['', null, undefined]], '#dig'), '#dig\n,,');
+  });
+  test('matrixRowsToCSVLines emits no header', () => {
+    deepEq(qf.matrixRowsToCSVLines([['x',''],['','y']]), ['x,', ',y']);
+  });
+
+  group('CSV: blueprint headers');
+  // #query was retired from the editor (the tab and its export were dropped), so it is no longer here.
+  const headers = { dig:'#dig', build:'#build', place:'#place', zone:'#zone', burrow:'#burrow' };
+  Object.entries(headers).forEach(([tab, hdr]) => {
+    test(`${tab} tab exports the ${hdr} header`, () => {
+      setup(qf, 2, 2, 1);
+      qf.state.preserveZOrder = false;
+      const csv = qf.tabToMultiZCSV(tab);
+      eq(csv.split('\n')[0], hdr);
+    });
+  });
+
+  group('CSV: cell content round-trips');
+  test('a designation token survives export verbatim', () => {
+    setup(qf, 3, 3, 1);
+    qf.state.preserveZOrder = false;
+    qf.setCellValue('dig', 0, 0, 0, 'd');
+    qf.setCellValue('dig', 0, 1, 1, 'd');
+    const csv = qf.tabToMultiZCSV('dig');
+    eq(csv, '#dig\nd,,\n,d,\n,,');
+  });
+  test('a comma-bearing token is quoted on export', () => {
+    setup(qf, 1, 2, 1);
+    qf.state.preserveZOrder = false;
+    qf.setCellValue('build', 0, 0, 0, 'b,mason'); // contrived token with comma
+    const csv = qf.tabToMultiZCSV('build');
+    assert(csv.includes('"b,mason"'), 'comma token should be quoted: ' + csv);
+  });
+
+  group('CSV: multi-z layers');
+  test('two non-empty layers are joined by #>', () => {
+    setup(qf, 2, 2, 2);
+    qf.state.preserveZOrder = false;
+    qf.setCellValue('dig', 0, 0, 0, 'd'); // display layer 0 (top)
+    qf.setCellValue('dig', 1, 0, 0, 'd'); // display layer 1 (below)
+    const csv = qf.tabToMultiZCSV('dig');
+    eq((csv.match(/#>/g) || []).length, 1, '#> count');
+  });
+  test('preserve mode writes #0N origin metadata', () => {
+    setup(qf, 2, 2, 3);
+    qf.state.preserveZOrder = true;
+    qf.state.zeroIndex = 1;
+    qf.setCellValue('dig', 0, 0, 0, 'd');
+    const csv = qf.tabToMultiZCSV('dig');
+    eq(csv.split('\n')[1], '#01', 'origin line');
+    eq((csv.match(/#>/g) || []).length, 2, '#> count for 3 layers');
+  });
+  test('default mode trims empty top/bottom layers', () => {
+    setup(qf, 2, 2, 3);
+    qf.state.preserveZOrder = false;
+    qf.setCellValue('dig', 1, 0, 0, 'd'); // only the middle layer has content
+    const csv = qf.tabToMultiZCSV('dig');
+    eq((csv.match(/#>/g) || []).length, 0, 'trimmed to a single layer');
+    assert(csv.includes('d'), 'content kept');
+  });
+  test('all-empty multi-z tab exports without error', () => {
+    setup(qf, 2, 2, 2);
+    qf.state.preserveZOrder = false;
+    const csv = qf.tabToMultiZCSV('dig');
+    eq(csv.split('\n')[0], '#dig');
+    eq((csv.match(/#>/g) || []).length, 0);
+  });
+
+  group('CSV: real export buttons');
+  test('Download CSV button exports the active tab via tabToMultiZCSV', () => {
+    setup(qf, 2, 2, 1);
+    qf.state.preserveZOrder = false;
+    qf.state.activeTab = 'build';
+    qf.setCellValue('build', 0, 0, 0, 'b');
+    let captured = null;
+    const orig = win.download;
+    win.download = (fn, text) => { captured = { fn, text }; };
+    try { win.document.getElementById('downloadcsv').click(); } finally { win.download = orig; }
+    assert(captured, 'download was not called');
+    // Download filenames are now prefixed with the active blueprint name (e.g. "Blueprint 1-build.csv").
+    assert(captured.fn.endsWith('-build.csv'), 'download filename should end with -build.csv, got ' + captured.fn);
+    eq(captured.text, qf.tabToMultiZCSV('build'));
+  });
+  test('Export All bundles every tab, separated by blank lines', () => {
+    setup(qf, 2, 2, 1);
+    qf.state.preserveZOrder = false;
+    let captured = null;
+    const orig = win.download;
+    win.download = (fn, text) => { captured = { fn, text }; };
+    try { win.document.getElementById('exportall').click(); } finally { win.download = orig; }
+    assert(captured, 'download was not called');
+    // Export All is now named from the workbook (e.g. "Blueprints.csv"), not a fixed string.
+    assert(/\.csv$/.test(captured.fn), 'Export All filename should be a .csv, got ' + captured.fn);
+    qf.Tabs.forEach(t => assert(captured.text.includes(t.header), 'missing ' + t.header));
+    eq((captured.text.match(/\n\n/g) || []).length, qf.Tabs.length - 1, 'blank-line separators');
+  });
+  test('Copy CSV button copies the active tab CSV', () => {
+    setup(qf, 2, 2, 1);
+    qf.state.preserveZOrder = false;
+    qf.setCellValue('dig', 0, 0, 0, 'd');
+    let copied = null;
+    const orig = win.copyToClipboard;
+    win.copyToClipboard = (text) => { copied = text; };
+    try { win.document.getElementById('copycsv').click(); } finally { win.copyToClipboard = orig; }
+    eq(copied, qf.tabToMultiZCSV('dig'));
+  });
+
+  group('Editing: grid + cells');
+  test('setCellValue writes, getMatrix reads back', () => {
+    setup(qf, 3, 3, 1);
+    qf.setCellValue('dig', 0, 2, 1, 'd');
+    eq(qf.getMatrix('dig', 0)[2][1], 'd');
+  });
+  test('setCellValue ignores out-of-bounds coordinates', () => {
+    setup(qf, 3, 3, 1);
+    qf.setCellValue('dig', 0, 99, 99, 'd'); // must not throw
+    eq(qf.getMatrix('dig', 0).flat().filter(Boolean).length, 0);
+  });
+  test('resize preserves existing content within overlap', () => {
+    setup(qf, 3, 3, 1);
+    qf.setCellValue('dig', 0, 0, 0, 'd');
+    qf.setGridSize(6, 6);
+    const m = qf.getMatrix('dig', 0);
+    eq(m.length, 6); eq(m[0].length, 6);
+    eq(m[0][0], 'd', 'top-left preserved');
+  });
+
+  group('Editing: transforms');
+  test('rotateMatrixCW rotates a 3x2 into a 2x3', () => {
+    const out = qf.rotateMatrixCW([['a','b'],['c','d'],['e','f']]);
+    deepEq(out, [['e','c','a'],['f','d','b']]);
+  });
+  test('rotateMatrixCW four times is identity', () => {
+    const m = [['a','b','c'],['d','e','f']];
+    let r = m; for (let i=0;i<4;i++) r = qf.rotateMatrixCW(r);
+    deepEq(r, m);
+  });
+  test('mirrorMatrixX flips rows; applied twice is identity', () => {
+    const m = [['a','b'],['c','d'],['e','f']];
+    deepEq(qf.mirrorMatrixX(m), [['e','f'],['c','d'],['a','b']]);
+    deepEq(qf.mirrorMatrixX(qf.mirrorMatrixX(m)), m);
+  });
+  test('mirrorMatrixY flips columns; applied twice is identity', () => {
+    const m = [['a','b','c'],['d','e','f']];
+    deepEq(qf.mirrorMatrixY(m), [['c','b','a'],['f','e','d']]);
+    deepEq(qf.mirrorMatrixY(qf.mirrorMatrixY(m)), m);
+  });
+
+  group('Editing: shapes');
+  test('bresenhamLine traces a straight horizontal run', () => {
+    deepEq(qf.bresenhamLine(0,0,0,3), [[0,0],[0,1],[0,2],[0,3]]);
+  });
+  test('bresenhamLine traces a clean diagonal', () => {
+    deepEq(qf.bresenhamLine(0,0,2,2), [[0,0],[1,1],[2,2]]);
+  });
+  test('rectCells filled covers the whole box', () => {
+    setup(qf, 5, 5, 1);
+    eq(qf.rectCells(0,0,2,2,false,1).length, 9);
+  });
+  test('rectCells outline is just the perimeter', () => {
+    setup(qf, 5, 5, 1);
+    eq(qf.rectCells(0,0,2,2,true,1).length, 8); // 3x3 ring
+  });
+  test('circleCells with zero radius is a single cell', () => {
+    setup(qf, 5, 5, 1);
+    deepEq(qf.circleCells(2,2,2,2,false,1), [[2,2]]);
+  });
+  test('lineCells (thickness 1) matches the bresenham point count', () => {
+    setup(qf, 5, 5, 1);
+    eq(qf.lineCells(0,0,4,4,1).length, qf.bresenhamLine(0,0,4,4).length);
+  });
+
+  group('Editing: flood fill');
+  test('flood fill of a blank grid fills every cell', () => {
+    setup(qf, 3, 3, 1);
+    qf.floodFill(1, 1, 'd');
+    eq(qf.getMatrix('dig',0).flat().every(v => v === 'd'), true);
+  });
+  test('flood fill respects a barrier', () => {
+    setup(qf, 3, 3, 1);
+    for (let r=0;r<3;r++) qf.setCellValue('dig',0,r,1,'x'); // wall down the middle column
+    qf.floodFill(0, 0, 'd'); // fill left region only
+    const m = qf.getMatrix('dig',0);
+    eq(m[0][0], 'd'); eq(m[1][0], 'd'); eq(m[2][0], 'd');
+    eq(m[0][1], 'x', 'barrier untouched');
+    eq(m[0][2], '', 'right side untouched');
+  });
+
+  group('Editing: undo / redo');
+  test('undo restores prior value, redo reapplies it', () => {
+    setup(qf, 3, 3, 1);
+    qf.historyBegin();
+    qf.setCellValue('dig', 0, 1, 1, 'd');
+    qf.historyCommit();
+    eq(qf.getMatrix('dig',0)[1][1], 'd');
+    qf.historyUndo();
+    eq(qf.getMatrix('dig',0)[1][1], '', 'undo cleared the cell');
+    qf.historyRedo();
+    eq(qf.getMatrix('dig',0)[1][1], 'd', 'redo restored the cell');
+  });
+
+  group('Editing: copy / paste');
+  test('pasteBufferAt stamps the buffer at a position', () => {
+    setup(qf, 3, 3, 1);
+    qf.state.copyBuffer = [['a','b'],['c','d']];
+    qf.pasteBufferAt(1, 1);
+    const m = qf.getMatrix('dig',0);
+    eq(m[1][1], 'a'); eq(m[1][2], 'b'); eq(m[2][1], 'c'); eq(m[2][2], 'd');
+  });
+  test('pasteSkipBlanks leaves existing cells under blank buffer cells', () => {
+    setup(qf, 3, 3, 1);
+    qf.setCellValue('dig', 0, 0, 1, 'z');
+    qf.state.copyBuffer = [['a','']];
+    qf.state.pasteSkipBlanks = true;
+    qf.pasteBufferAt(0, 0);
+    const m = qf.getMatrix('dig',0);
+    eq(m[0][0], 'a'); eq(m[0][1], 'z', 'blank buffer cell did not overwrite');
+  });
+  test('copySelectedArea captures the selected rectangle into copyBuffer', () => {
+    setup(qf, 4, 4, 1);
+    qf.setCellValue('dig', 0, 1, 1, 'd');
+    qf.setCellValue('dig', 0, 1, 2, 'd');
+    qf.state.selectionRect = { r0:1, c0:1, r1:2, c1:2, tab:'dig', z:0 };
+    qf.copySelectedArea();
+    deepEq(qf.state.copyBuffer, [['d','d'],['','']]);
+  });
+}
+
+// ---------- rendering ----------
+function render() {
+  const out = document.getElementById('out');
+  const groups = [...new Set(results.map(r => r.group))];
+  for (const g of groups) {
+    const h = document.createElement('div'); h.className = 'group'; h.textContent = g; out.appendChild(h);
+    for (const r of results.filter(x => x.group === g)) {
+      const row = document.createElement('div'); row.className = 'row ' + (r.ok ? 'ok' : 'bad');
+      const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = r.ok ? 'PASS' : 'FAIL';
+      const name = document.createElement('div'); name.className = 'name'; name.textContent = r.name;
+      if (!r.ok && r.detail) {
+        const d = document.createElement('div'); d.className = 'detail'; d.textContent = r.detail; name.appendChild(d);
+      }
+      row.appendChild(tag); row.appendChild(name); out.appendChild(row);
+    }
+  }
+  const pass = results.filter(r => r.ok).length;
+  const fail = results.length - pass;
+  const sum = document.getElementById('summary');
+  if (sum) {
+    sum.className = fail ? 'fail' : 'pass';
+    sum.textContent = `${pass}/${results.length} passed` + (fail ? `: ${fail} FAILED` : ': all green');
+  }
+  console.log(`[fortplanner tests] ${pass}/${results.length} passed` + (fail ? `, ${fail} failed` : ''),
+    fail ? results.filter(r => !r.ok) : '');
+  // machine-readable handle for headless runners / CI
+  window.__testResults = { pass, fail, total: results.length,
+    failures: results.filter(r => !r.ok).map(r => ({ name: r.name, detail: r.detail })) };
+  document.title = (fail ? `FAIL ${fail}` : 'PASS') + ': fortplanner tests';
+}
+
+// ---------- boot ----------
+window.addEventListener('load', () => {
+  const iframe = document.getElementById('app');
+  const start = () => setTimeout(() => {
+    try { run(iframe.contentWindow); }
+    catch (e) { finished = true; setStatus('Runner error', 'fail'); banner('The test runner itself threw: ' + String(e && e.message || e)); }
+  }, 60);
+  if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') start();
+  else iframe.addEventListener('load', start);
+  // Watchdog: if nothing has run within 12s, say so instead of spinning on "Running..." forever.
+  setTimeout(() => {
+    if (finished) return;
+    setStatus('Did not run (see message above)', 'fail');
+    banner('Tests did not start within 12 seconds. The editor iframe probably failed to load or threw during startup.<br><br>' +
+      'Open DevTools (F12) and check the Console for the first red error in <code>quickfort-grid-editor.html</code>, then reload.<br><br>' +
+      'Make sure you opened this over <code>http://localhost</code>, not as a <code>file://</code> path.');
+  }, 12000);
+});
+</script>
+</body>
+</html>
