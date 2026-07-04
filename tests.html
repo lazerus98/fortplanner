@@ -69,6 +69,12 @@ function expose(win) {
     'state','Tabs','makeMatrix','ensureGrids','ensureHistory','getMatrix','setMatrix',
     'setCellValue','setGridSize','tabToMultiZCSV','tabToMultiZCSVTrimmed','matrixToCSV',
     'matrixRowsToCSVLines','rotateMatrixCW','mirrorMatrixX','mirrorMatrixY','floodFill',
+    'reaimTrackToken','reaimBuildingToken','applyMatTransform',
+    'collapseRectangles','containerShorthand','bareDigPriorities','additiveTracks',
+    'normalizeImportToken','importSectionToMultiZ','splitStackedZoneTypes',
+    'buildModelineText','parseModelineMarkers',
+    'parseCSV','csvQuoteLine','firstCSVCell','detectHeaderLine','splitSheetsFromText','headerToTabId',
+    'matrixContentBounds','uniformExportCrop','cropMatrixToBounds',
     'rectCells','lineCells','circleCells','bresenhamLine','pasteBufferAt','copySelectedArea',
     'historyBegin','historyCommit','historyUndo','historyRedo'
   ];
@@ -249,6 +255,385 @@ function defineTests(qf, win) {
     eq(copied, qf.tabToMultiZCSV('dig'));
   });
 
+  // The CSV IMPORT-parse layer (parseCSV + csvQuoteLine + firstCSVCell + detectHeaderLine +
+  // splitSheetsFromText + headerToTabId) was the one CSV module with ZERO coverage even though its
+  // export counterparts (matrixToCSV / matrixRowsToCSVLines) are pinned above. It is the exact inverse
+  // of the encoder, so the property that actually matters for a "stop fighting CSVs" tool is
+  // parse(encode(x)) === x, and this layer is where the real comma/quote truncation bug shipped
+  // (unquoted note/meta lines split on the first comma). Pure, no DOM. Source at
+  // quickfort-grid-editor.html:6017-6112 and csvQuoteLine at :4304.
+  group('CSV: parse + import round-trip');
+  test('parseCSV splits a plain grid into a matrix', () => {
+    deepEq(qf.parseCSV('a,b\nc,d'), [['a','b'],['c','d']]);
+  });
+  test('parseCSV unquotes a quoted comma cell and collapses doubled quotes', () => {
+    deepEq(qf.parseCSV('"a,b",c'), [['a,b','c']]);
+    deepEq(qf.parseCSV('"a""b"'), [['a"b']]);
+  });
+  test('parseCSV pads short rows out to a rectangle', () => {
+    deepEq(qf.parseCSV('a,b,c\nd'), [['a','b','c'],['d','','']]);
+  });
+  test('parseCSV normalizes CRLF and a lone CR to row breaks', () => {
+    deepEq(qf.parseCSV('a,b\r\nc,d'), [['a','b'],['c','d']]);
+    deepEq(qf.parseCSV('x\ry'), [['x'],['y']]);
+  });
+  test('parseCSV is the exact inverse of matrixRowsToCSVLines (comma + quote cells)', () => {
+    const m = [['a,b','c"d'],['','plain']];
+    deepEq(qf.parseCSV(qf.matrixRowsToCSVLines(m).join('\n')), m);
+  });
+  test('csvQuoteLine + firstCSVCell round-trip a comma-bearing note/meta line (shipped bug)', () => {
+    // The truncation bug: an unquoted `repeat(down, 3)` note split on the first comma on re-import.
+    const note = 'repeat(down, 3)';
+    eq(qf.firstCSVCell(qf.csvQuoteLine(note)), note);
+    eq(qf.csvQuoteLine('plainlabel'), 'plainlabel'); // safe line stays unquoted (byte-unchanged)
+  });
+  test('firstCSVCell returns the trimmed first field, quoted or not', () => {
+    eq(qf.firstCSVCell('#dig , x'), '#dig');
+    eq(qf.firstCSVCell('"a,b",c'), 'a,b');
+  });
+  test('detectHeaderLine recognizes mode + non-grid headers (case-insensitive), rejects a grid row', () => {
+    eq(qf.detectHeaderLine('#dig'), '#dig');
+    eq(qf.detectHeaderLine('#zone label(Pasture)'), '#zone'); // markers after the header are ignored
+    eq(qf.detectHeaderLine('#Notes'), '#notes');              // case-insensitive
+    eq(qf.detectHeaderLine('d,d,d'), null);
+    eq(qf.detectHeaderLine(''), null);
+  });
+  test('headerToTabId maps live headers, skips retired/unknown sections', () => {
+    eq(qf.headerToTabId('#dig'), 'dig');
+    eq(qf.headerToTabId('#zone'), 'zone');
+    eq(qf.headerToTabId('#query'), null); // retired legacy tab: never leaks into another tab
+    eq(qf.headerToTabId('#meta'), null);  // non-grid section
+  });
+  test('splitSheetsFromText splits a two-section bundle, trimming the blank separator', () => {
+    const sheets = qf.splitSheetsFromText('#dig\nd,d\n\n#build\nb,\n,b');
+    eq(sheets.length, 2);
+    eq(sheets[0].header, '#dig');
+    deepEq(sheets[0].matrix, [['d','d']]);
+    eq(sheets[1].header, '#build');
+    deepEq(sheets[1].matrix, [['b',''],['','b']]);
+  });
+  test('splitSheetsFromText returns one header-less sheet for a bare grid', () => {
+    const one = qf.splitSheetsFromText('d,d\n,d');
+    eq(one.length, 1);
+    eq(one[0].header, null);
+    deepEq(one[0].matrix, [['d','d'],['','d']]);
+  });
+  test('splitSheetsFromText captures the header line modeline (start marker)', () => {
+    const hdr = qf.buildModelineText('dig', { startX:'3', startY:'2' }); // '#dig start(3; 2)'
+    const s = qf.splitSheetsFromText(hdr + '\nd,d');
+    eq(s.length, 1);
+    eq(s[0].header, '#dig');
+    eq(s[0].modeline.startX, '3');
+    eq(s[0].modeline.startY, '2');
+  });
+
+  // The export-side normalisation transforms (container shorthand, dig-priority
+  // shorthand, rectangle collapse) and their import-side inverse shipped across many
+  // cycles logging "logic read-through only (no browser)". They are pure and
+  // table-driven, and the harness had NO import/round-trip coverage, so pin them here.
+  group('Export transforms: shorthand + collapse');
+  test('containerShorthand collapses a natural-container pile to typeN', () => {
+    deepEq(qf.containerShorthand([['f{barrels=5}','s{wheelbarrows=2}','e{bins=3}']]),
+           [['f5','s2','e3']]);
+  });
+  test('containerShorthand keys the count off the LAST type letter', () => {
+    // se{bins=5}: last letter e -> bins matches -> collapses.
+    deepEq(qf.containerShorthand([['se{bins=5}']]), [['se5']]);
+    // fs{barrels=5}: last letter s -> wheelbarrows != barrels, so `fs5` would misattach; leave it.
+    deepEq(qf.containerShorthand([['fs{barrels=5}']]), [['fs{barrels=5}']]);
+  });
+  test('containerShorthand maps a containerless type to wheelbarrows', () => {
+    deepEq(qf.containerShorthand([['a{wheelbarrows=5}']]), [['a5']]);
+  });
+  test('bareDigPriorities strips d1..d7 to a bare 1..7 and leaves d/dx alone', () => {
+    deepEq(qf.bareDigPriorities([['d1','d7','d','dx']]), [['1','7','d','dx']]);
+  });
+  test('collapseRectangles folds a solid block into token(WxH)', () => {
+    deepEq(qf.collapseRectangles([['d','d'],['d','d']]), [['d(2x2)',''],['','']]);
+  });
+  test('collapseRectangles leaves a non-rectangular (L) region tile-by-tile', () => {
+    deepEq(qf.collapseRectangles([['d','d'],['d','']]), [['d','d'],['d','']]);
+  });
+  test('collapseRectangles leaves a lone cell alone (no 1x1 noise)', () => {
+    deepEq(qf.collapseRectangles([['d','']]), [['d','']]);
+  });
+
+  // additiveTracks collapses a STRAIGHT carved-track run (the alias caps trackE..trackW
+  // horizontally, trackS..trackN vertically) into one additive segment T(Lx1)/T(1xL),
+  // clearing the consumed cells. A run missing an end cap, an isolated cap, or a corner
+  // mid-run must stay tile-by-tile (only complete straight runs collapse). Dense two-pass
+  // geometry with a used-cell overlap guard, and the last export transform still untested.
+  group('Export transforms: additive carved tracks');
+  test('collapses a horizontal trackE..trackEW..trackW run into T(Lx1)', () => {
+    deepEq(qf.additiveTracks([['trackE','trackEW','trackW']]), [['T(3x1)','','']]);
+  });
+  test('collapses a two-cell horizontal run (no middle) into T(2x1)', () => {
+    deepEq(qf.additiveTracks([['trackE','trackW']]), [['T(2x1)','']]);
+  });
+  test('collapses a vertical trackS..trackNS..trackN run into T(1xL)', () => {
+    deepEq(qf.additiveTracks([['trackS'],['trackNS'],['trackN']]),
+           [['T(1x3)'],[''],['']]);
+  });
+  test('leaves a run missing its end cap tile-by-tile', () => {
+    // trackE, trackEW, trackEW with no closing trackW: not a complete straight run.
+    deepEq(qf.additiveTracks([['trackE','trackEW','trackEW']]),
+           [['trackE','trackEW','trackEW']]);
+  });
+  test('leaves an isolated cap and non-track cells untouched', () => {
+    deepEq(qf.additiveTracks([['trackE','d']]), [['trackE','d']]);
+  });
+  test('collapses a horizontal and a vertical run in one matrix independently', () => {
+    deepEq(qf.additiveTracks([['trackS','trackE','trackW'],
+                              ['trackN','','']]),
+           [['T(1x2)','T(2x1)',''],['','','']]);
+  });
+
+  group('Import: normalization + round-trip');
+  test('normalizeImportToken expands a bare dig priority, leaves other dig tokens', () => {
+    eq(qf.normalizeImportToken('dig','3'), 'd3');
+    eq(qf.normalizeImportToken('dig','d'), 'd');
+  });
+  test('normalizeImportToken expands place container shorthand off the last letter', () => {
+    eq(qf.normalizeImportToken('place','f5'), 'f{barrels=5}');
+    eq(qf.normalizeImportToken('place','a5'), 'a{wheelbarrows=5}');
+    eq(qf.normalizeImportToken('place','se5'), 'se{bins=5}');
+  });
+  test('normalizeImportToken is the exact inverse of containerShorthand', () => {
+    const original = [['f{barrels=5}','s{wheelbarrows=2}','se{bins=5}','a{wheelbarrows=9}']];
+    const shrunk = qf.containerShorthand(original);
+    const restored = shrunk.map(row => row.map(c => qf.normalizeImportToken('place', c)));
+    deepEq(restored, original);
+  });
+  test('normalizeImportToken inverts bareDigPriorities', () => {
+    const original = [['d1','d7','d']];
+    const bare = qf.bareDigPriorities(original);
+    const restored = bare.map(row => row.map(c => qf.normalizeImportToken('dig', c)));
+    deepEq(restored, original);
+  });
+  test('importSectionToMultiZ expands an area token into a solid block', () => {
+    setup(qf, 3, 3, 1);
+    qf.state.preserveZOrder = true;
+    qf.importSectionToMultiZ('dig', [['d(3x3)']]);
+    eq(qf.getMatrix('dig', 0).flat().every(v => v === 'd'), true);
+  });
+  test('collapseRectangles -> importSectionToMultiZ round-trips a solid block', () => {
+    setup(qf, 2, 2, 1);
+    qf.state.preserveZOrder = true;
+    qf.importSectionToMultiZ('dig', qf.collapseRectangles([['d','d'],['d','d']]));
+    deepEq(qf.getMatrix('dig', 0), [['d','d'],['d','d']]);
+  });
+
+  // In #dig a bare `T(WxH)` with |W|>1 AND |H|>1 is an L-shaped carved-track CORNER, NOT a
+  // solid block (ref doc sec 8 / docs/_reference/corner-track-syntax.md). The importer paints
+  // the two arms (length |W| horizontally + |H| vertically from the anchor) as generic `T`, the
+  // sign of each dim choosing the corner. This is dense geometry with a real bug history: the
+  // generic `(WxH)` expansion once solid-filled `T(3x3)` (carving 4 interior tiles the author
+  // never wrote) and the negative-dim corners (`T(-3x-3)` etc.) fell through as literal
+  // unrecognized text. Straight `T(1xN)`/`T(Nx1)`, track ALIASES (`trackNSEW(...)`, lowercase
+  // so the capital-T regex skips them), and a `#build` `T(3x3)` must all still solid-fill.
+  // Pure + deterministic + browser-untested when shipped, so pin the geometry here.
+  group('Import: carved-track corner geometry');
+  function importCorner(rows, gr = 3, gc = 3, tab = 'dig') {
+    setup(qf, gr, gc, 1);
+    qf.state.preserveZOrder = true;
+    qf.importSectionToMultiZ(tab, rows);
+    return qf.getMatrix(tab, 0);
+  }
+  test('T(3x3) top-left paints an L, not a solid block (interior stays empty)', () => {
+    deepEq(importCorner([['T(3x3)']]),
+           [['T','T','T'],['T','',''],['T','','']]);
+  });
+  test('T(-3x3) is the top-right corner (arm runs left + down)', () => {
+    // Anchor the token in the top-right cell so both signed arms stay on the grid.
+    deepEq(importCorner([['','','T(-3x3)']]),
+           [['T','T','T'],['','','T'],['','','T']]);
+  });
+  test('T(3x-3) is the bottom-left corner (arm runs right + up)', () => {
+    deepEq(importCorner([['','',''],['','',''],['T(3x-3)']]),
+           [['T','',''],['T','',''],['T','T','T']]);
+  });
+  test('T(-3x-3) is the bottom-right corner (arm runs left + up)', () => {
+    deepEq(importCorner([['','',''],['','',''],['','','T(-3x-3)']]),
+           [['','','T'],['','','T'],['T','T','T']]);
+  });
+  test('an arm running off-grid is clamped per tile, never throws', () => {
+    // T(-3x-3) anchored top-left points both arms off the top/left edge; only the anchor lands.
+    deepEq(importCorner([['T(-3x-3)']]),
+           [['T','',''],['','',''],['','','']]);
+  });
+  test('a one-wide T(3x1)/T(1x3) is a straight run, NOT an L (falls through to expansion)', () => {
+    deepEq(importCorner([['T(3x1)']]), [['T','T','T'],['','',''],['','','']]);
+    deepEq(importCorner([['T(1x3)']]), [['T','',''],['T','',''],['T','','']]);
+  });
+  test('a track ALIAS (WxH) still solid-fills (lowercase t skips the corner branch)', () => {
+    deepEq(importCorner([['trackNSEW(2x2)']], 2, 2),
+           [['trackNSEW','trackNSEW'],['trackNSEW','trackNSEW']]);
+  });
+  test('#build T(3x3) still solid-fills (corner branch is dig-only, no trap regression)', () => {
+    // The center cell being filled proves it is a solid block, not a hollow L.
+    deepEq(importCorner([['T(3x3)']], 3, 3, 'build'),
+           [['T','T','T'],['T','T','T'],['T','T','T']]);
+  });
+
+  // splitStackedZoneTypes detects overlapping-zone cells (`n{...}t{...}(WxH)`, ref sec 11):
+  // it drives the stage-3 display (tooltip names each zone, the "+N" badge, the colour-split
+  // background) and must agree with the zone eyedropper reverse-parse on what counts as
+  // stacked, or a cell could show a badge yet fail to Alt+click round-trip. Pure + browser-
+  // untested when shipped, so pin the grammar here.
+  group('Zones: stacked overlap detection');
+  test('two overlapping zones return both leading type letters', () => {
+    deepEq(qf.splitStackedZoneTypes('n{name="Herd"}t{active=false}'), ['n','t']);
+  });
+  test('a shared trailing (WxH) extent is allowed after the last zone', () => {
+    deepEq(qf.splitStackedZoneTypes('n{name="Herd"}t{active=false}(3x3)'), ['n','t']);
+  });
+  test('per-zone /label is stripped from the reported type', () => {
+    deepEq(qf.splitStackedZoneTypes('n/North{}t{active=false}'), ['n','t']);
+  });
+  test('a bare second type with no braces still stacks (pen + meeting)', () => {
+    deepEq(qf.splitStackedZoneTypes('n{name=Herd}m'), ['n','m']);
+  });
+  test('a single zone is not stacked (returns [])', () => {
+    deepEq(qf.splitStackedZoneTypes('n'), []);
+    deepEq(qf.splitStackedZoneTypes('n{name=Herd}'), []);
+    deepEq(qf.splitStackedZoneTypes('n{name=Herd}(3x3)'), []);
+  });
+  test('braceless leading zones split per letter (all #zone types are single letters)', () => {
+    // Unlike #place (where combined letters are ONE stockpile), #zone types are each a
+    // single letter and Quickfort reads them one at a time, so `nt` is pen + animal
+    // training, and `nt{active=false}` (base `n` + overlay `t{...}`, what the #zone-overlay
+    // field emits) is two zones, not an unknown "nt". This is the case the greedy [A-Za-z]+
+    // regex previously misread as a single type.
+    deepEq(qf.splitStackedZoneTypes('nt'), ['n','t']);
+    deepEq(qf.splitStackedZoneTypes('nt{active=false}'), ['n','t']);
+  });
+  test('a malformed token (gap that is not an extent) reports no stack, never corrupts', () => {
+    deepEq(qf.splitStackedZoneTypes('n{name=Herd} t{active=false}'), []);
+    deepEq(qf.splitStackedZoneTypes(''), []);
+    deepEq(qf.splitStackedZoneTypes(null), []);
+  });
+
+  // The per-tab modeline header (label/start/hidden/message/comment) is assembled by
+  // buildModelineText and read back by parseModelineMarkers on import. This round-trip is
+  // pure but had NO coverage, and it has a bug-fix history worth pinning: start() must parse
+  // comma / space separators (not only our exported ';'), fields are sanitized so a comma can
+  // never split the CSV cell on re-import, and the trim-margins crop must shift start() by the
+  // cropped offset (clamped at 1). Each expected value derives from buildModelineText's append
+  // order (label, start, hidden(), message(), then the free-text comment) at
+  // quickfort-grid-editor.html:4147 and parseModelineMarkers at :4178.
+  group('Modeline: marker round-trip');
+  test('build emits the bare mode header when there are no markers', () => {
+    eq(qf.buildModelineText('dig', null), '#dig');
+    eq(qf.parseModelineMarkers('#dig'), null);
+  });
+  test('a label round-trips through build -> parse', () => {
+    const line = qf.buildModelineText('build', { label:'North Herd' });
+    eq(line, '#build label(North Herd)');
+    eq(qf.parseModelineMarkers(line).label, 'North Herd');
+  });
+  test('start(X; Y; hint) round-trips', () => {
+    const line = qf.buildModelineText('dig', { startX:'10', startY:'5', startHint:'Central stairs' });
+    eq(line, '#dig start(10; 5; Central stairs)');
+    const p = qf.parseModelineMarkers(line);
+    eq(p.startX, '10'); eq(p.startY, '5'); eq(p.startHint, 'Central stairs');
+  });
+  test('parse accepts semicolon / comma / space start() separators (shipped fix)', () => {
+    // Our own export uses ';', but a hand-written or Quickfort-emitted blueprint may use
+    // 'start(10, 5)' or 'start(10 5)'. Splitting only on ';' dropped the marker on re-export.
+    // The comma form must be a quoted cell: an unquoted comma is a CSV field separator, so
+    // firstCSVCell would (correctly) chop the cell at the comma before start() is read.
+    const semi = qf.parseModelineMarkers('#dig start(10; 5)');
+    const comma = qf.parseModelineMarkers('"#dig start(10, 5)"');
+    const space = qf.parseModelineMarkers('#dig start(10 5)');
+    eq(semi.startX, '10');  eq(semi.startY, '5');
+    eq(comma.startX, '10'); eq(comma.startY, '5');
+    eq(space.startX, '10'); eq(space.startY, '5');
+  });
+  test('hidden() and message() round-trip', () => {
+    const h = qf.buildModelineText('dig', { hidden:true });
+    eq(h, '#dig hidden()');
+    eq(qf.parseModelineMarkers(h).hidden, true);
+    const msg = qf.buildModelineText('dig', { message:'Dig this out first' });
+    eq(msg, '#dig message(Dig this out first)');
+    eq(qf.parseModelineMarkers(msg).message, 'Dig this out first');
+  });
+  test('every marker round-trips through build -> parse', () => {
+    const m = { label:'Dining', startX:'12', startY:'8', startHint:'top left',
+                hidden:true, message:'Route to depot', comment:'Grand dining hall' };
+    const p = qf.parseModelineMarkers(qf.buildModelineText('dig', m));
+    eq(p.label, 'Dining');
+    eq(p.startX, '12'); eq(p.startY, '8'); eq(p.startHint, 'top left');
+    eq(p.hidden, true);
+    eq(p.message, 'Route to depot');
+    eq(p.comment, 'Grand dining hall');
+  });
+  test('CSV-hostile characters in a field are sanitized (keeps re-import lossless)', () => {
+    // commas split CSV columns; parens/newlines break the marker grammar. clean() maps them
+    // to a space, so 'a, b (c)' -> 'a b c' and the header can never corrupt the CSV on re-import.
+    const line = qf.buildModelineText('dig', { label:'a, b (c)' });
+    assert(!line.includes(','), 'comma must be stripped so it cannot split the CSV cell: ' + line);
+    eq(qf.parseModelineMarkers(line).label, 'a b c');
+  });
+  test('startShift subtracts the trim crop and clamps X/Y at 1', () => {
+    // Trim margins slides the grid origin, so start() must shift by the crop; a coordinate that
+    // would go < 1 clamps to 1 (Quickfort cursor is 1-indexed). 10-3=7; 5-9 clamps up to 1.
+    eq(qf.buildModelineText('dig', { startX:'10', startY:'5' }, { left:3, top:9 }), '#dig start(7; 1)');
+  });
+
+  // The "Trim margins" export crops empty border rows/cols and slides the grid origin, and
+  // it must use ONE crop rectangle across a tab's Z-layers so multi-Z floors stay on the same
+  // column grid and start() shifts by a single (dLeft,dTop). That geometry
+  // (matrixContentBounds -> uniformExportCrop -> cropMatrixToBounds) had the project's worst
+  // bug saga (docs/_reference/trim-margins-start-shift.md) yet was browser-untested: the
+  // startShift test above pins the offset math but nothing pinned the crop rectangle itself.
+  // Each expected value derives from the source at quickfort-grid-editor.html:4071-4114.
+  group('Export crop: uniform trim geometry');
+  test('matrixContentBounds returns the inclusive box of non-empty cells', () => {
+    deepEq(qf.matrixContentBounds([['','',''],['','d',''],['','','']]),
+           { rMin:1, rMax:1, cMin:1, cMax:1 });
+    deepEq(qf.matrixContentBounds([['d','d'],['d','d']]),
+           { rMin:0, rMax:1, cMin:0, cMax:1 });
+  });
+  test('matrixContentBounds treats whitespace-only cells as empty', () => {
+    // cellHas trims, so a cell of spaces is empty and an all-blank matrix has no bounds.
+    eq(qf.matrixContentBounds([[' ','']]), null);
+    eq(qf.matrixContentBounds([['','']]), null);
+  });
+  test('uniformExportCrop unions two layers so floors share a column grid', () => {
+    // Layer A: content at (1,1). Layer B: content at (0,3). The union spans both.
+    const a = [['','','',''],['','d','',''],['','','','']];
+    const b = [['','','','d'],['','','',''],['','','','']];
+    deepEq(qf.uniformExportCrop([a, b]), { rMin:0, rMax:1, cMin:1, cMax:3 });
+  });
+  test('uniformExportCrop skips empty layers and is null when all are empty', () => {
+    const one = [['','',''],['','d',''],['','','']];
+    // an all-empty middle layer must not widen the crop.
+    deepEq(qf.uniformExportCrop([one, [['','',''],['','',''],['','','']]]),
+           { rMin:1, rMax:1, cMin:1, cMax:1 });
+    eq(qf.uniformExportCrop([[['','']], [['']]]), null);
+  });
+  test('cropMatrixToBounds slices to the inclusive rectangle', () => {
+    deepEq(qf.cropMatrixToBounds([['a','b','c'],['d','e','f']], { rMin:0, rMax:1, cMin:1, cMax:2 }),
+           [['b','c'],['e','f']]);
+  });
+  test('cropMatrixToBounds pads cells outside a short/narrow layer with blanks', () => {
+    // A one-row layer cropped to a two-row shared box: the missing row becomes blanks so every
+    // emitted floor keeps the crop width (empty interior floors crop to blank rows).
+    deepEq(qf.cropMatrixToBounds([['a']], { rMin:0, rMax:1, cMin:0, cMax:1 }),
+           [['a',''],['','']]);
+  });
+  test('cropMatrixToBounds with null bounds (all-empty tab) returns the matrix untouched', () => {
+    const m = [['a','b'],['c','d']];
+    eq(qf.cropMatrixToBounds(m, null), m);
+  });
+  test('crop to a matrix own bounds equals trimming its empty borders', () => {
+    // matrixContentBounds -> cropMatrixToBounds is the single-layer trim: a bordered block
+    // crops to just its content, matching the old per-layer trimMatrixMargins result.
+    const m = [['','','',''],['','d','e',''],['','f','g',''],['','','','']];
+    deepEq(qf.cropMatrixToBounds(m, qf.matrixContentBounds(m)),
+           [['d','e'],['f','g']]);
+  });
+
   group('Editing: grid + cells');
   test('setCellValue writes, getMatrix reads back', () => {
     setup(qf, 3, 3, 1);
@@ -288,6 +673,64 @@ function defineTests(qf, win) {
     const m = [['a','b','c'],['d','e','f']];
     deepEq(qf.mirrorMatrixY(m), [['c','b','a'],['f','e','d']]);
     deepEq(qf.mirrorMatrixY(qf.mirrorMatrixY(m)), m);
+  });
+
+  // A geometric transform must also re-aim the DIRECTION letters of carved / constructed
+  // tracks and direction-sensitive #build buildings (a mirrored trackNE corner is a trackNW,
+  // ref doc sec 13). This logic is pure and was shipped browser-untested, so pin it here.
+  group('Editing: track re-aim');
+  test('carved-track corner re-aims under each transform', () => {
+    eq(qf.reaimTrackToken('trackNE', 'my'), 'trackNW', 'mirror Y (left-right)');
+    eq(qf.reaimTrackToken('trackNE', 'mx'), 'trackSE', 'mirror X (top-bottom)');
+    eq(qf.reaimTrackToken('trackNE', 'rotate'), 'trackSE', 'rotate cw');
+    eq(qf.reaimTrackToken('trackNE', 'rotateCCW'), 'trackNW', 'rotate ccw');
+  });
+  test('straight track re-aims and stays canonically ordered', () => {
+    eq(qf.reaimTrackToken('trackNS', 'rotate'), 'trackEW', 'N-S rotate cw -> E-W');
+    eq(qf.reaimTrackToken('trackNS', 'my'), 'trackNS', 'N-S mirror Y unchanged');
+    // rotate cw sends N->E, S->W; result must re-sort to canonical NSEW order.
+    eq(qf.reaimTrackToken('trackEW', 'rotate'), 'trackNS', 'E-W rotate cw -> N-S');
+  });
+  test('constructed-track ramp prefix is preserved on re-aim', () => {
+    eq(qf.reaimTrackToken('trackrampNE', 'rotate'), 'trackrampSE');
+  });
+  test('a non-track token passes through reaimTrackToken unchanged', () => {
+    eq(qf.reaimTrackToken('d', 'rotate'), 'd');
+    eq(qf.reaimTrackToken('b', 'my'), 'b');
+    eq(qf.reaimTrackToken('', 'rotate'), '');
+  });
+
+  group('Editing: building re-aim');
+  test('bridge facing re-aims (gw raises N; ref-doc example gw rotate cw = gd)', () => {
+    eq(qf.reaimBuildingToken('gw', 'rotate'), 'gd', 'rotate cw');
+    eq(qf.reaimBuildingToken('gw', 'mx'), 'gx', 'mirror X');
+    eq(qf.reaimBuildingToken('gd', 'my'), 'ga', 'mirror Y');
+    eq(qf.reaimBuildingToken('g', 'rotate'), 'g', 'plain retracting bridge unchanged');
+  });
+  test('screw-pump facing re-aims', () => {
+    eq(qf.reaimBuildingToken('Msu', 'rotate'), 'Msk', 'from N -> from E on rotate cw');
+    eq(qf.reaimBuildingToken('Msu', 'my'), 'Msu', 'from N unchanged under left-right mirror');
+  });
+  test('roller / track-stop cardinal letters re-aim', () => {
+    eq(qf.reaimBuildingToken('rollerNS', 'rotate'), 'rollerEW');
+    eq(qf.reaimBuildingToken('rollerNS', 'mx'), 'rollerSN', 'push order preserved');
+    eq(qf.reaimBuildingToken('trackstopE', 'rotate'), 'trackstopS');
+    eq(qf.reaimBuildingToken('trackstop', 'rotate'), 'trackstop', 'no-direction stop unchanged');
+  });
+  test('axle / water-wheel swap axis on rotation but not on mirror', () => {
+    eq(qf.reaimBuildingToken('Mh', 'rotate'), 'Mhs', 'E-W axle -> N-S on rotate');
+    eq(qf.reaimBuildingToken('Mh', 'mx'), 'Mh', 'mirror does not swap the axis');
+    eq(qf.reaimBuildingToken('Mw', 'rotate'), 'Mws', 'vertical wheel -> horizontal on rotate');
+    eq(qf.reaimBuildingToken('Mv', 'rotate'), 'Mv', 'vertical axle has no in-plane orientation');
+  });
+  test('a property tail (/label {props} :config) survives re-aim', () => {
+    eq(qf.reaimBuildingToken('rollerNS{speed=50000}', 'rotate'), 'rollerEW{speed=50000}');
+    eq(qf.reaimBuildingToken('trackstopE{route=Foo}', 'rotate'), 'trackstopS{route=Foo}');
+  });
+  test('applyMatTransform moves cells AND re-aims tracks together', () => {
+    // trackNE at (0,0), trackNS at (1,1); mirror Y (left-right) swaps columns and re-aims.
+    const m = [['trackNE',''],['','trackNS']];
+    deepEq(qf.applyMatTransform(m, 'my'), [['','trackNW'],['trackNS','']]);
   });
 
   group('Editing: shapes');

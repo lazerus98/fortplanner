@@ -93,6 +93,8 @@
     .menu button:hover { background: var(--accent-soft); color: var(--accent); }
     .menu .menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
     .menu .menu-lbl { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--hint); padding: 6px 10px 2px; font-weight: 600; }
+    /* Subtle, wrapping explanatory line inside a menu (not a section header). */
+    .menu .menu-hint { font-size: 11px; color: var(--hint); padding: 4px 10px 2px; line-height: 1.4; white-space: normal; }
     .menu .menu-opt { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; color: var(--ink); cursor: pointer; white-space: nowrap; }
     .menu .menu-opt:hover { background: var(--line); }
     .menu .menu-opt input { accent-color: var(--accent); margin: 0; }
@@ -121,6 +123,8 @@
     #zoom-label:hover { color: var(--accent); }
     #z-label { cursor: text; }
     #z-label:hover { color: var(--accent); }
+    #pos-stat { cursor: text; }
+    #pos-stat:hover { color: var(--accent); }
     .ctl .stepbtn { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: none; color: var(--textmuted); cursor: pointer; border-radius: 6px; font-size: 15px; }
     .ctl .stepbtn:hover { background: var(--accent-soft); color: var(--accent); }
     /* generic pill button used in toolbar/sidebar/status */
@@ -180,6 +184,8 @@
     .layer-row { display: flex; align-items: center; gap: 8px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--ink); }
     .layer-row:hover { border-color: var(--accent); }
     .layer-row.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+    .layer-row .lr-thumb { width: 40px; height: 26px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 3px; background: var(--page); }
+    .layer-row.active .lr-thumb { border-color: var(--accent); }
     .layer-row .lr-z { font-family: var(--mono, ui-monospace, monospace); }
     /* amber "this floor has painted content (on any tab)" dot; matches the mode-tab dot. Always
        present so the row layout never shifts; hidden via visibility until content exists. */
@@ -226,6 +232,9 @@
       padding: 5px 8px; background: var(--page); border: 1px solid var(--line); color: var(--ink); border-radius: 8px; font-family: inherit; font-size: 12px;
     }
     aside input[type=number] { width: 70px; }
+    /* Zone location supply targets: a touch wider so the item-name placeholders read.
+       Selector carries type + class to outrank the 70px rule above. */
+    aside input[type=number].zone-desired { width: 92px; }
     aside label { font-size: 12px; color: var(--textmuted); display: inline-flex; align-items: center; gap: 5px; }
     /* sidebar resize handle */
     .sidebar-resizer { position: absolute; top: 0; left: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
@@ -345,6 +354,14 @@
        "above" ghost is upright, so the direction reads at a glance. */
     table.grid td .onion-ghost { opacity: 0.32; color: var(--hint); pointer-events: none; font-style: italic; }
     table.grid td .onion-ghost.above { font-style: normal; }
+    /* Stacked overlapping zones (n{...}t{...}): a small bottom-right "+N" badge on a
+       #zone cell holding 2+ zones sharing a footprint, so multiple zones read at a
+       glance (complements the tooltip that names each). Bottom-right so it clears the
+       top-left start-cell corner flag. Display-only; the cell still colours by its
+       first zone. Built in renderGrid on the zone tab. */
+    table.grid td .zone-stack-badge { position: absolute; bottom: 0; right: 1px;
+      font-size: calc(var(--cell-font) * var(--zoom) * 0.6); line-height: 1;
+      color: var(--accent); font-weight: 700; pointer-events: none; z-index: 4; }
     /* Freehand brush footprint outline (shown on hover when brush size > 1) */
     .brush-overlay { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 3; display: none; box-sizing: border-box; border: 2px solid var(--accent); border-radius: 2px; }
     .brush-overlay.active { display: block; }

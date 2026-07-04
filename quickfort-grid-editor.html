@@ -91,10 +91,10 @@
       <button class="rail-tool" id="rail-select" type="button" title="Select area (M)"><i class="ti ti-pointer"></i></button>
       <span class="rail-sep"></span>
       <button class="rail-tool" data-shape="free" type="button" title="Freehand (B)"><i class="ti ti-pencil"></i></button>
-      <button class="rail-tool" data-shape="rect" type="button" title="Rectangle (R)"><i class="ti ti-square"></i></button>
-      <button class="rail-tool" data-shape="line" type="button" title="Line (L)"><i class="ti ti-line"></i></button>
+      <button class="rail-tool" data-shape="rect" type="button" title="Rectangle (R). Hold Shift while dragging to snap to a square."><i class="ti ti-square"></i></button>
+      <button class="rail-tool" data-shape="line" type="button" title="Line (L). Hold Shift while dragging to snap horizontal / vertical / 45 degrees."><i class="ti ti-line"></i></button>
       <button class="rail-tool" data-shape="circle" type="button" title="Circle (C)"><i class="ti ti-circle"></i></button>
-      <button class="rail-tool" data-shape="fill" type="button" title="Fill (G)"><i class="ti ti-bucket-droplet"></i></button>
+      <button class="rail-tool" data-shape="fill" type="button" title="Fill (G): flood the contiguous same-token region. With a selection active, the fill is clipped to it (fill one room without leaking through a gap)."><i class="ti ti-bucket-droplet"></i></button>
       <span class="rail-sep"></span>
       <button id="rail-hollow" class="rail-toggle" type="button" title="Hollow outline (H)"><i class="ti ti-box"></i></button>
       <button id="rail-mv" class="rail-toggle" type="button" title="Mirror across vertical axis"><i class="ti ti-flip-vertical"></i></button>
@@ -212,21 +212,49 @@
           <div class="note">Use exact tokens per DFHack build reference. Search filters the lists below.</div>
           <div class="ctx-section" style="margin:12px -14px 0;">
           <div class="ch">Build options</div>
-          <div class="row" style="gap:8px;">
+          <div class="row" style="gap:8px; flex-wrap:wrap; align-items:center;">
             <input id="build-name" type="text" placeholder="name (e.g. Mason1)" />
             <label><input id="build-do-now" type="checkbox" /> do_now (high priority)</label>
+            <label><input id="build-seasonal-fertilize" type="checkbox" /> seasonal_fertilize (farm plot)</label>
           </div>
           <div class="row" style="margin-top:8px; gap:8px;">
             <input id="build-take-from" type="text" placeholder="take_from (workshop/furnace profile)" />
             <input id="build-give-to" type="text" placeholder="give_to (workshop/furnace profile)" />
           </div>
           <div class="row" style="margin-top:8px;">
-            <input id="build-max-orders" type="number" min="0" placeholder="max_general_orders (workshop)" />
+            <input id="build-route" type="text" placeholder="route (track-stop hauling route name)" />
           </div>
           <div class="row" style="margin-top:8px;">
-            <input id="build-props" type="text" placeholder="extra props, e.g. friction=50 speed=10000" />
+            <input id="build-config" type="text" placeholder="config (track-stop item filter, e.g. -cat_stone/mats/)" />
           </div>
-          <div class="note">Structured fields build {name=..., do_now=true, ...}. name + do_now apply to any building; take_from / give_to / max_general_orders are workshop/furnace profile props. Extra props (track-stop friction, roller speed, :config, etc.) are appended as-is. Only added when the selected base token has no braces of its own; a hand-typed custom token like trackstopN{friction=500} is left untouched.</div>
+          <div class="row" style="margin-top:8px;">
+            <input id="build-max-orders" type="number" min="0" placeholder="max_general_orders (workshop)" />
+          </div>
+          <div class="row" style="margin-top:8px; gap:8px;">
+            <input id="build-min-skill" type="text" placeholder="min_skill (workshop skill floor)" />
+            <input id="build-max-skill" type="text" placeholder="max_skill (workshop skill cap)" />
+          </div>
+          <div class="row" style="margin-top:8px; gap:8px;">
+            <input id="build-labor" type="text" placeholder="labor (workshop labor, e.g. Masonry)" />
+            <input id="build-labor-mask" type="text" placeholder="labor_mask (workshop labor group)" />
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <select id="build-roller-speed" title="Roller speed (rollerNS/EW/SN/WE); blank = game default">
+              <option value="">roller speed (default)</option>
+              <option value="50000">Highest (50000)</option>
+              <option value="40000">Higher (40000)</option>
+              <option value="30000">High (30000)</option>
+              <option value="20000">Low (20000)</option>
+              <option value="10000">Lowest (10000)</option>
+            </select>
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="build-props" type="text" placeholder="extra props, e.g. friction=50" />
+          </div>
+          <div class="row" style="margin-top:8px; justify-content:flex-end;">
+            <button type="button" class="btn" data-clear-opts="build" title="Reset all Build option fields to empty">Clear options</button>
+          </div>
+          <div class="note">Structured fields build {name=..., do_now=true, ...}. name + do_now apply to any building; seasonal_fertilize applies to farm plots (fertilize the plot each season); take_from / give_to / max_general_orders / min_skill / max_skill / labor / labor_mask are workshop/furnace profile props (min_skill/max_skill restrict the skill range of dwarves allowed to work there; labor / labor_mask restrict which labor is enabled at the building). route names a track-stop hauling route (with take_from as the source stockpile) for quantum-stockpile setups; leave it empty to let each apply create a fresh route. config filters which item types a track stop desires, using the stockpile syntax (op-led: -cat_stone/mats/); it is emitted as a :config segment after the {props}, where extra props cannot reach. roller speed sets a roller's push speed (Highest..Lowest; blank = game default). Extra props (track-stop friction, etc.) are appended as-is. Only added when the selected base token has no braces of its own; a hand-typed custom token like trackstopN{friction=500} is left untouched.</div>
           </div>
         </div>
 
@@ -268,10 +296,12 @@
             <label><input id="place-autotrade" type="checkbox" /> autotrade</label>
             <label><input id="place-autodump" type="checkbox" /> autodump</label>
             <label><input id="place-autotrain" type="checkbox" /> autotrain</label>
+            <label><input id="place-autoforbid" type="checkbox" /> autoforbid</label>
+            <label><input id="place-autoclaim" type="checkbox" /> autoclaim</label>
           </div>
 
           <div class="row" style="margin-top:8px;">
-            <input id="place-config" type="text" placeholder=":=configuration (e.g. seeds, booze)" />
+            <input id="place-config" type="text" placeholder="config (e.g. seeds, or -cat_weapons/mats/)" />
           </div>
 
           <div class="row" style="margin-top:8px;">
@@ -282,7 +312,11 @@
             <input id="place-props" type="text" placeholder="extra props, e.g. desired_goblets=20 desired_soap=10" />
           </div>
 
-          <div class="note">Structured fields build properties like {name=..., barrels=..., links_only=true}. Extra props are appended as-is. :=configuration is appended after properties. Label (type/label) is Quickfort-internal: it keeps two touching same-type piles separate, or merges disconnected regions; use the same label on every tile of one pile.</div>
+          <div class="row" style="margin-top:8px; justify-content:flex-end;">
+            <button type="button" class="btn" data-clear-opts="place" title="Reset all Stockpile option fields to empty">Clear options</button>
+          </div>
+
+          <div class="note">Structured fields build properties like {name=..., barrels=..., links_only=true}. Extra props are appended as-is. The config is appended after properties: a bare preset (seeds, booze) defaults to the = (set) op, or lead with an op yourself to disable (-cat_weapons/mats/) or enable (+steelweapons), chaining segments with commas. Label (type/label) is Quickfort-internal: it keeps two touching same-type piles separate, or merges disconnected regions; use the same label on every tile of one pile.</div>
           </div>
         </div>
 
@@ -296,7 +330,6 @@
             <select id="zone-location">
               <option value="">location (none)</option>
               <option value="tavern">tavern</option>
-              <option value="inn">inn</option>
               <option value="temple">temple</option>
               <option value="library">library</option>
               <option value="guildhall">guildhall</option>
@@ -304,6 +337,13 @@
             </select>
             <input id="zone-location-name" type="text" placeholder="location name (e.g. mainpub)" />
             <input id="zone-profession" type="text" placeholder="profession (for guildhall)" />
+            <select id="zone-allow">
+              <option value="">allow (location access)</option>
+              <option value="visitors">visitors</option>
+              <option value="residents">residents</option>
+              <option value="citizens">citizens</option>
+              <option value="members">members</option>
+            </select>
           </div>
           <div class="row" style="margin-top:8px;">
             <input id="zone-label" type="text" placeholder="label (internal, e.g. east)" />
@@ -313,20 +353,50 @@
             <select id="zone-shoot-from">
               <option value="">shoot_from (archery range)</option>
               <option value="west">west</option>
+              <option value="left">left (west)</option>
               <option value="east">east</option>
+              <option value="right">right (east)</option>
               <option value="north">north</option>
+              <option value="top">top (north)</option>
               <option value="south">south</option>
+              <option value="bottom">bottom (south)</option>
             </select>
           </div>
           <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap; align-items:center;">
             <label><input id="zone-pond" type="checkbox" /> pond (pit/pond)</label>
             <label><input id="zone-pets" type="checkbox" /> pets (tomb)</label>
+            <label><input id="zone-no-citizens" type="checkbox" /> no citizens (tomb)</label>
+            <label><input id="zone-no-pick-trees" type="checkbox" /> no pick_trees (gather)</label>
+            <label><input id="zone-no-pick-shrubs" type="checkbox" /> no pick_shrubs (gather)</label>
+            <label><input id="zone-no-gather-fallen" type="checkbox" /> no gather_fallen (gather)</label>
             <label><input id="zone-deactivate" type="checkbox" /> deactivate (active=false)</label>
           </div>
-          <div class="row" style="margin-top:8px;">
-            <input id="zone-props" type="text" placeholder="extra props, e.g. desired_goblets=20 desired_suture=10" />
+          <div class="row zone-desired-row" style="margin-top:8px; gap:6px; flex-wrap:wrap; align-items:center;">
+            <span class="note" style="width:100%; margin:0 0 2px;">Location supply targets (only apply to the attached location; blank = game default):</span>
+            <input id="zone-desired-goblets" type="number" min="0" class="zone-desired" placeholder="goblets" title="desired_goblets (tavern)" />
+            <input id="zone-desired-instruments" type="number" min="0" class="zone-desired" placeholder="instrum." title="desired_instruments (tavern / temple)" />
+            <input id="zone-desired-splints" type="number" min="0" class="zone-desired" placeholder="splints" title="desired_splints (hospital)" />
+            <input id="zone-desired-thread" type="number" min="0" class="zone-desired" placeholder="thread" title="desired_thread (hospital)" />
+            <input id="zone-desired-cloth" type="number" min="0" class="zone-desired" placeholder="cloth" title="desired_cloth (hospital)" />
+            <input id="zone-desired-crutches" type="number" min="0" class="zone-desired" placeholder="crutches" title="desired_crutches (hospital)" />
+            <input id="zone-desired-powder" type="number" min="0" class="zone-desired" placeholder="powder" title="desired_powder (hospital)" />
+            <input id="zone-desired-buckets" type="number" min="0" class="zone-desired" placeholder="buckets" title="desired_buckets (hospital)" />
+            <input id="zone-desired-soap" type="number" min="0" class="zone-desired" placeholder="soap" title="desired_soap (hospital)" />
+            <input id="zone-desired-paper" type="number" min="0" class="zone-desired" placeholder="paper" title="desired_paper (library)" />
           </div>
-          <div class="note">Structured fields build {name=..., location=tavern/mainpub}. Type-specific fields (pond, shoot_from, pets) only apply to the matching zone type. Extra props appended as-is. Label (type/label) is Quickfort-internal: keeps two touching same-type zones separate, or merges disconnected regions; use the same label on every tile.</div>
+          <div class="row" style="margin-top:8px;">
+            <input id="zone-overlay" type="text" placeholder="overlapping zones, e.g. t{active=false} or m (appended before extent)" />
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="zone-extent" type="text" placeholder="extent (e.g. 3x3 or (5x5))" />
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="zone-props" type="text" placeholder="extra props (rarely needed), appended as-is" />
+          </div>
+          <div class="row" style="margin-top:8px; justify-content:flex-end;">
+            <button type="button" class="btn" data-clear-opts="zone" title="Reset all Zone option fields to empty">Clear options</button>
+          </div>
+          <div class="note">Structured fields build {name=..., location=tavern/mainpub}. allow restricts location access (visitors/residents/citizens/members). Type-specific fields (pond, shoot_from, pets) only apply to the matching zone type. A tomb allows citizens by default; "no citizens" emits citizens=false to disallow them. A gather zone picks trees, shrubs, and fallen fruit by default; the three "no ..." boxes emit pick_trees=false / pick_shrubs=false / gather_fallen=false to turn one off. Location supply targets emit desired_* stock levels for the attached location (tavern goblets/instruments, hospital splints/thread/cloth/crutches/powder/buckets/soap, library paper, temple instruments). Overlapping zones stack a second zone (with its own {props}) on the same tiles: the field is concatenated after this zone's token and before the extent, so this + "t{active=false}" paints n{...}t{active=false}. Extent (WxH) stamps one painted cell so Quickfort expands it into a WxH zone block on import. Extra props appended as-is. Label (type/label) is Quickfort-internal: keeps two touching same-type zones separate, or merges disconnected regions; use the same label on every tile.</div>
           </div>
         </div>
 
@@ -338,12 +408,18 @@
           <div class="row" style="gap:8px;">
             <input id="burrow-name" type="text" placeholder="name (e.g. Safe)" />
             <label><input id="burrow-create" type="checkbox" /> create</label>
-            <input id="burrow-civalert" type="text" placeholder="civalert (e.g. Siege)" />
+            <label><input id="burrow-civalert" type="checkbox" /> civalert</label>
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="burrow-extent" type="text" placeholder="extent (e.g. 5x5)" />
           </div>
           <div class="row" style="margin-top:8px;">
             <input id="burrow-props" type="text" placeholder="extra props, e.g. autochop_wood=true" />
           </div>
-          <div class="note">Structured fields build {name=..., create=true, civalert=...}. Extra props support autochop_* and others.</div>
+          <div class="row" style="margin-top:8px; justify-content:flex-end;">
+            <button type="button" class="btn" data-clear-opts="burrow" title="Reset all Burrow option fields to empty">Clear options</button>
+          </div>
+          <div class="note">Structured fields build {name=..., create=true, civalert=true}. civalert registers the burrow with gui/civ-alert (it takes no name). Extent (WxH) stamps one painted cell so Quickfort expands it into a WxH burrow block on import. Extra props support autochop_* and others.</div>
           </div>
         </div>
 
@@ -370,13 +446,14 @@
           <button id="mirror-x-selection" type="button" title="Mirror X: flip vertically (X)"><i class="ti ti-flip-vertical"></i>Mirror X</button>
           <button id="copy-selection" type="button" title="Copy selection"><i class="ti ti-copy"></i>Copy</button>
           <button id="cut-selection" type="button" title="Cut selection"><i class="ti ti-scissors"></i>Cut</button>
+          <button id="selection-to-bp" type="button" title="New blueprint from selection: extract the selected rectangle (all mode tabs, current floor) into its own reusable blueprint"><i class="ti ti-file-plus"></i>To blueprint</button>
         </div>
         <!-- Legend: floating, collapsible panel listing tokens present on this grid -->
         <div id="legend" class="legend hidden" aria-label="Colour legend"></div>
       </div>
       <div class="statusbar">
         <span class="stat"><span class="dot"></span><span id="active-tab-label">dig</span> tab</span>
-        <span class="stat muted"><i class="ti ti-brush"></i>Tool: <span class="kbd" id="active-tool">d</span></span>
+        <span class="stat muted"><i class="ti ti-brush"></i>Tool: <span class="kbd" id="active-tool">d</span> <span id="active-tool-name"></span></span>
         <div class="grow"></div>
         <div class="actions">
           <button id="undo-btn" title="Undo (Ctrl+Z)" disabled><i class="ti ti-arrow-back-up"></i><span id="undo-lbl">Undo</span></button>
@@ -417,13 +494,19 @@
     <div class="menu-wrap up">
       <button id="import-btn" class="tb-btn" aria-haspopup="true" aria-expanded="false" title="Import a blueprint"><i class="ti ti-upload"></i>Import <i class="ti ti-chevron-down" style="font-size:13px"></i></button>
       <div id="import-menu" class="menu hidden" role="menu">
-        <button id="loadcsv" type="button"><i class="ti ti-file-text"></i>Load CSV</button>
+        <button id="loadcsv" type="button" title="Load a Quickfort blueprint CSV into the current blueprint. A file that stacks several blueprints (consecutive modeline blocks, e.g. from Export Workbook (CSV)) imports each into its own workbook slot, replacing the current workbook."><i class="ti ti-file-text"></i>Load CSV</button>
         <button id="pastecsv" type="button" title="Paste a CSV blueprint from the clipboard (no file dialog needed)"><i class="ti ti-clipboard"></i>Paste CSV from clipboard</button>
         <button id="loadworkbook" type="button" title="Import an .xlsx workbook (one blueprint per sheet)"><i class="ti ti-table"></i>Load Workbook (.xlsx)</button>
         <button id="loadproject" type="button" title="Load a fortplanner project file (.json): restores the whole workbook (every blueprint, all tabs/Z-levels, modeline markers, notes, and meta script). Replaces the current session."><i class="ti ti-folder-open"></i>Load Project (.json)</button>
         <input id="fileinput" type="file" accept=".csv,.txt" style="display:none" />
         <input id="workbookinput" type="file" accept=".xlsx" style="display:none" />
         <input id="projectinput" type="file" accept=".json,application/json" style="display:none" />
+        <div class="menu-hint">Tip: you can also drag a .csv, .xlsx, or .json file straight onto the window to load it.</div>
+        <div class="menu-sep"></div>
+        <div class="menu-lbl">Examples (replace current blueprint)</div>
+        <button id="example-bedroom" type="button" title="Load a 3x3 bedroom example: dig the room, then build a bed, cabinet, and door. Shows how one design spans the Dig and Build tabs. Replaces the current blueprint's content."><i class="ti ti-file-text"></i>Bedroom (dig + build)</button>
+        <button id="example-stockpiles" type="button" title="Load a stockpiles example: food (5 barrels), stone, and a combined bars+ammo pile. Shows container shorthand (f5) and multi-type piles (bz). Replaces the current blueprint's content."><i class="ti ti-file-text"></i>Stockpiles (place)</button>
+        <button id="example-dining" type="button" title="Load a dining-hall example: tables and chairs built on the Build tab, with a dining-hall zone over them on the Zones tab. Replaces the current blueprint's content."><i class="ti ti-file-text"></i>Dining hall (build + zone)</button>
         <div class="menu-sep"></div>
         <button id="clearsession" type="button" title="Discard the auto-saved session and reset to a single blank blueprint (cannot be undone)"><i class="ti ti-trash"></i>Clear saved session</button>
       </div>
@@ -438,6 +521,7 @@
         <button id="previewcsv" type="button" title="Show the exact CSV this tab will export (with current export options and modeline markers applied)"><i class="ti ti-eye"></i>Preview CSV</button>
         <button id="downloadxlsx" type="button" title="Export the current tab as a shaded Excel .xlsx (cell fills mirror the grid colours)"><i class="ti ti-table-export"></i>Export .xlsx</button>
         <button id="downloadpng" type="button" title="Download a PNG picture of the current tab + Z-level (coloured cells with glyphs). A visual snapshot for sharing; not an importable blueprint."><i class="ti ti-photo-down"></i>Download PNG</button>
+        <button id="copypng" type="button" title="Copy a PNG picture of the current tab + Z-level to the clipboard, ready to paste into Discord, notes, or a chat. Same picture as Download PNG; a visual snapshot, not an importable blueprint."><i class="ti ti-clipboard"></i>Copy PNG</button>
         <div class="menu-sep"></div>
         <div class="menu-lbl">All tabs / workbook</div>
         <button id="exportall" type="button"><i class="ti ti-files"></i>Export All (CSV)</button>
@@ -445,6 +529,7 @@
         <button id="previewall" type="button" title="Show the exact combined CSV the Export All button writes: every tab concatenated, plus the single #notes and #meta sections"><i class="ti ti-eye"></i>Preview All (CSV)</button>
         <button id="exportallxlsx" type="button" title="Export all tabs as one shaded .xlsx (one sheet per tab)"><i class="ti ti-table-export"></i>Export All .xlsx</button>
         <button id="exportworkbook" type="button" title="Export every blueprint as one shaded .xlsx (one sheet per blueprint)"><i class="ti ti-books"></i>Export Workbook .xlsx</button>
+        <button id="exportworkbookcsv" type="button" title="Export the whole workbook as one plain-text .csv: every blueprint stacked as its own modeline sections. Quickfort reads consecutive blueprints from one file, so this bundles all your blueprints (infrastructure, bedrooms, shops...) into a single importable CSV."><i class="ti ti-files"></i>Export Workbook (CSV)</button>
         <button id="downloadproject" type="button" title="Download the whole workbook as a portable fortplanner project file (.json): every blueprint, all tabs/Z-levels, modeline markers, notes, and the meta script. The lossless format for backups and sharing; reload with Import &rarr; Load Project. Keyboard shortcut: Ctrl/Cmd+S."><i class="ti ti-folder-down"></i>Download Project (.json)</button>
       </div>
     </div>
@@ -457,7 +542,7 @@
         <label class="menu-opt" title="Write d1..d7 dig cells as bare 1..7"><input type="checkbox" id="opt-bare-priorities"/> Bare dig priorities <span class="menu-hint">d1-d7 &rarr; 1-7</span></label>
         <label class="menu-opt" title="Collapse a stockpile whose only setting is its natural container count to the typeN shorthand (e.g. f{barrels=5} to f5, multi-type se{bins=5} to se5)"><input type="checkbox" id="opt-container-shorthand"/> Container shorthand <span class="menu-hint">f{barrels=5} &rarr; f5</span></label>
         <label class="menu-opt" title="Collapse an isolated straight run of carved-track tiles (#dig) into one additive segment: trackE/trackEW/trackW &rarr; T(Lx1), trackS/trackNS/trackN &rarr; T(1xL). Corners and junctions stay tile-by-tile"><input type="checkbox" id="opt-additive-tracks"/> Additive tracks <span class="menu-hint">straight run &rarr; T(Lx1)</span></label>
-        <label class="menu-opt" title="Remove empty border rows and columns from each exported layer, so the CSV is sized to the painted content rather than the full grid. Applies per Z-layer independently."><input type="checkbox" id="opt-trim-margins"/> Trim margins <span class="menu-hint">crop empty border rows/cols</span></label>
+        <label class="menu-opt" title="Remove empty border rows and columns on export, so the blueprint is sized to the painted content rather than the full grid. One uniform crop is taken across a tab's floors (keeping multi-Z floors aligned) and the start() cursor is shifted to match."><input type="checkbox" id="opt-trim-margins"/> Trim margins <span class="menu-hint">crop empty border rows/cols</span></label>
         <div class="menu-sep"></div>
         <div class="menu-lbl">Modeline markers (current tab)</div>
         <label class="menu-opt" title="Blueprint name; lets #meta and other blueprints reference this section"><span>Label</span> <input type="text" id="ml-label" class="ml-input" placeholder="(none)"/></label>
@@ -502,6 +587,9 @@
               <h4>Mouse and modifiers</h4>
               <div class="row"><span class="help-k">Alt+click</span> eyedrop a token (fills its fields)</div>
               <div class="row"><span class="help-k">Shift+click</span> set the start() cursor</div>
+              <div class="row"><span class="help-k">Ctrl/Cmd+click</span> select the contiguous same-token region</div>
+              <div class="row"><span class="help-k">Shift+drag</span> Line snaps to horizontal, vertical, or 45&deg;</div>
+              <div class="row"><span class="help-k">Shift+drag</span> Rect snaps to a square</div>
               <div class="row"><span class="help-k">Middle-drag</span> pan the grid</div>
               <div class="row"><span class="help-k">Wheel</span> change Z-level</div>
               <div class="row"><span class="help-k">Ctrl+wheel</span> zoom</div>
@@ -512,6 +600,7 @@
               <div class="feat"><b>CSV</b><span>the blueprint</span></div>
               <div class="feat"><b>.xlsx</b><span>coloured view (import is value-only)</span></div>
               <div class="feat"><b>PNG</b><span>a picture, not importable</span></div>
+              <div class="feat"><b>Workbook CSV</b><span>every blueprint stacked in one .csv; Load CSV splits a stacked file back into separate blueprints</span></div>
               <div class="feat"><b>Project .json</b><span>lossless backup of the workbook</span></div>
               <div class="feat"><b>Options</b><span>area expansion, bare priorities, container shorthand, additive tracks, trim margins</span></div>
               <div class="feat"><b>Modeline, notes, meta</b><span>set a tab Label so #meta can reference it; autosave is per-browser, .json is the portable backup</span></div>
@@ -519,16 +608,22 @@
           </div>
           <div class="help-sec">
             <h4>Features worth knowing</h4>
+            <div class="feat"><b>Examples</b><span>Import menu loads a bedroom, stockpile, or dining-hall starter</span></div>
+            <div class="feat"><b>Drag and drop</b><span>drop a .csv, .xlsx, or .json file onto the window to load it</span></div>
             <div class="feat"><b>Command palette</b><span>Ctrl/Cmd+K runs everything</span></div>
             <div class="feat"><b>Workbook</b><span>top-bar tabs are separate blueprints</span></div>
             <div class="feat"><b>Paste Blueprint</b><span>stamp another blueprint's Z-level</span></div>
+            <div class="feat"><b>Selection to blueprint</b><span>extract a room into its own reusable blueprint</span></div>
             <div class="feat"><b>Onion-skin</b><span>ghost the floor below or above to align</span></div>
             <div class="feat"><b>Highlight matches</b><span>Q outlines tool matches, N jumps</span></div>
             <div class="feat"><b>Tiled paste</b><span>stamp the buffer as a grid of copies</span></div>
             <div class="feat"><b>Rows and columns</b><span>insert or delete mid-grid (palette)</span></div>
+            <div class="feat"><b>Flip blueprint</b><span>mirror the whole grid left-right or top-bottom (palette)</span></div>
+            <div class="feat"><b>Rotate blueprint</b><span>turn the whole grid 90 clockwise or counter-clockwise (palette)</span></div>
             <div class="feat"><b>Find and replace</b><span>swap one token everywhere</span></div>
             <div class="feat"><b>Colours</b><span>customiser feeds grid and shaded .xlsx</span></div>
             <div class="feat"><b>Picture view</b><span>hide glyphs for a pure colour map</span></div>
+            <div class="feat"><b>Go to coordinate</b><span>click the pointer readout, type X, Y</span></div>
           </div>
         </div>
         <div class="help-sec help-keys">
@@ -559,11 +654,12 @@
             <div class="row"><span class="help-k">Ctrl/Cmd+PageUp</span> switch blueprint</div>
             <div class="row"><span class="help-k">F2</span> rename blueprint</div>
             <div class="row"><span class="help-k">Home</span> scroll to start()</div>
+            <div class="row"><span class="help-k">Esc</span> cancel drag, paste, or selection</div>
             <div class="row"><span class="help-k">?</span> open or close help</div>
           </div>
         </div>
       </div>
-      <div class="help-foot">Found a bug or an idea? Email <a href="mailto:feedback@fortplanner.com?subject=Fortplanner%20feedback">feedback@fortplanner.com</a></div>
+      <div class="help-foot"><a href="https://docs.dfhack.org/en/stable/docs/guides/quickfort-user-guide.html" target="_blank" rel="noopener">Quickfort blueprint syntax reference</a> (the token and mode docs this editor is built from) &middot; Found a bug or an idea? Email <a href="mailto:feedback@fortplanner.com?subject=Fortplanner%20feedback">feedback@fortplanner.com</a></div>
     </div>
     </div>
       </div>
@@ -575,7 +671,7 @@
        Sits outside <main> as a body-flex sibling so it is always visible (the .statusbar
        inside <main> is hidden by relocateBottomBar; this strip is not affected by that). -->
   <div id="status-strip">
-    <span class="stat muted" id="pos-stat"><i class="ti ti-pointer"></i><span id="pos">-</span></span>
+    <span class="stat muted" id="pos-stat" title="Click to jump to a coordinate (X, Y)"><i class="ti ti-pointer"></i><span id="pos">-</span></span>
     <span class="stat muted" id="autosave-stat" title="Your work is auto-saved in this browser and restored on reload."></span>
     <span class="stat muted" id="match-stat" title="Cells on this tab + Z-level matching the active tool (shown when Highlight matches is on)"></span>
     <span class="stat muted" id="undo-stat" title="Undo / redo steps available on this tab + Z-level (Ctrl+Z / Ctrl+Y)"></span>
@@ -782,6 +878,8 @@ const state = {
       recentByTab: {},
       painting: false,
       lastPaintVal: '',
+      lastPaintCell: null,  // last cell painted this freehand stroke, for gap-free fast drags
+
       zoom: 1,
       brushSize: 1,
   previewEnabled: false,
@@ -949,6 +1047,7 @@ const state = {
     const activeTabLbl = document.getElementById('active-tab-label');
     const activeToolLbl = document.getElementById('active-tool');
     const posLbl = document.getElementById('pos');
+    let editingPosLabel = false; // true while the click-to-jump coordinate input is open
 
     // init data structures
     function makeMatrix(rows, cols) {
@@ -1004,12 +1103,6 @@ const state = {
       if (state.zCount < 1) state.zCount = 1;
       if (state.zeroIndex < 0) state.zeroIndex = 0;
       if (state.zeroIndex >= state.zCount) state.zeroIndex = state.zCount - 1;
-    }
-
-    function clampSize() {
-      const cols = Math.max(1, Math.min(300, parseInt(document.getElementById('cols').value || defaultCols, 10)));
-      const rows = Math.max(1, Math.min(300, parseInt(document.getElementById('rows').value || defaultRows, 10)));
-      state.cols = cols; state.rows = rows;
     }
 
     function resizeAllGrids(newRows, newCols) {
@@ -1142,8 +1235,15 @@ const state = {
       const host = document.getElementById('layers-list');
       if (!host) return;
       host.querySelectorAll('.layer-row').forEach(row => {
+        const d = parseInt(row.dataset.z, 10);
         const dot = row.querySelector('.lr-dot');
-        if (dot) dot.classList.toggle('on', zHasContent(parseInt(row.dataset.z, 10)));
+        if (dot) dot.classList.toggle('on', zHasContent(d));
+        // Keep the active floor's thumbnail honest during live painting (only that
+        // floor's cells change here; structural ops rebuild the whole list instead).
+        if (d === state.activeZ) {
+          const thumb = row.querySelector('.lr-thumb');
+          if (thumb) renderLayerThumb(thumb, d);
+        }
       });
     }
 
@@ -1159,6 +1259,7 @@ const state = {
       });
       // restore active tool label
       activeToolLbl.textContent = state.selectedToolByTab[id] || 'blank';
+      updateActiveToolName();
       renderRecentTray(); // show this tab's recent tokens
       if (state.legendVisible) renderLegend();
       renderGrid();
@@ -1289,6 +1390,33 @@ const state = {
       return getShortSymbol(s, scopeId);
     }
 
+  // A #zone cell may stack several overlapping zones, each carrying its own
+  // type + {props} (spec sec 11: n{...}t{...}(WxH)). Split such a token into the
+  // per-zone type letters so a tooltip can name every contained zone, not just
+  // the first. Returns [] for an ordinary single-type token (2+ groups needed),
+  // and [] on any malformed shape so the caller safely uses its existing path.
+  function splitStackedZoneTypes(raw) {
+      const s = String(raw || '');
+      // #zone types are all SINGLE letters (see ZONE_TYPES), and Quickfort reads a
+      // stacked cell one type letter at a time until it hits a /, {, or (. So each
+      // group is one letter + optional /label + optional {props}. Matching [A-Za-z]+
+      // (greedy) instead misread a braceless first zone like `nt{active=false}`
+      // (base `n` + overlay `t{...}`, exactly what the #zone-overlay field emits) as a
+      // single unknown type "nt", so its badge/gradient/tooltip/legend all failed.
+      const groupRe = /([A-Za-z])(?:\/[A-Za-z0-9_]+)?(?:\{[^}]*\})?/g;
+      const types = [];
+      let consumed = 0, m;
+      while ((m = groupRe.exec(s)) !== null) {
+        if (m.index !== consumed) break; // a gap means the token is malformed
+        types.push(m[1]);
+        consumed = groupRe.lastIndex;
+      }
+      // Only a single optional trailing (WxH) extent may follow the last group.
+      const tail = s.slice(consumed);
+      if (!/^(?:\(\s*\d+\s*x\s*\d+\s*\))?$/.test(tail)) return [];
+      return types.length >= 2 ? types : [];
+  }
+
   // Human-readable name for a cell's token (e.g. "bed", "food stockpile",
   // "channel"), looked up from the same palette/legend catalogs the Tile
   // counts modal uses, so hovering a cell explains an unfamiliar symbol.
@@ -1297,6 +1425,13 @@ const state = {
   // is no friendly name distinct from the token text itself.
   function friendlyTokenName(tabId, raw, labels) {
       if (!raw || isPlaceholderToken(raw)) return '';
+      // Stacked overlapping zones: name each contained zone, joined by " + ".
+      if (tabId === 'zone') {
+        const stackTypes = splitStackedZoneTypes(raw);
+        if (stackTypes.length >= 2) {
+          return stackTypes.map(t => labels[t] || labels[t.charAt(0)] || t).join(' + ');
+        }
+      }
       let base = (tabId === 'dig') ? stripDigMarkersAndPriority(raw) : stripPropsAndCfg(raw);
       if (tabId === 'place' || tabId === 'zone') base = base.split('/')[0];
       if (!base) return '';
@@ -1334,17 +1469,25 @@ const state = {
   }
 
   // Position-label text for the cell under the cursor: 1-indexed "col, row",
-  // plus a live "W x H" size while a marquee selection or a rect/line/circle
-  // shape is being dragged out (so rooms can be sized to a target as you draw).
+  // plus a live size while a marquee selection or a rect/line/circle shape is
+  // being dragged out (so rooms can be sized to a target as you draw). A rect,
+  // line, or marquee shows its bounding box "W x H"; a circle drags from the
+  // centre, so a bounding box would mislead: it shows the radius (rounded, as
+  // circleCells rounds it) and the pixel diameter (2r+1 cells across).
   function posLabelText(r, c) {
       let s = `${c + 1}, ${r + 1}`;
       let anchor = null;
       if (state.selectionMode && state.selecting && state.selStart) anchor = state.selStart;
       else if (state.shaping && state.shapeStart) anchor = state.shapeStart;
       if (anchor) {
-        const w = Math.abs(c - anchor.c) + 1;
-        const h = Math.abs(r - anchor.r) + 1;
-        s += '  ' + w + ' × ' + h;
+        if (state.shaping && state.selectedShape === 'circle') {
+          const rad = Math.round(Math.hypot(r - anchor.r, c - anchor.c));
+          s += '  r=' + rad + ' ⌀' + (rad * 2 + 1);
+        } else {
+          const w = Math.abs(c - anchor.c) + 1;
+          const h = Math.abs(r - anchor.r) + 1;
+          s += '  ' + w + ' × ' + h;
+        }
       }
       return s;
   }
@@ -1370,6 +1513,19 @@ const state = {
           const tipName = friendlyTokenName(state.activeTab, val, tipLabels);
           td.title = tipName ? (tipName + ' (' + fullTip + ')') : fullTip;
           styleCell(td, val, state.activeTab);
+          // Stacked overlapping zones (n{...}t{...}): a small "+N" corner badge so a
+          // #zone cell holding 2+ zones sharing a footprint reads at a glance, matching
+          // the tooltip that names each one. Display-only; the cell still colours by its
+          // first zone via styleCell. N = number of ADDITIONAL zones (count - 1).
+          if (state.activeTab === 'zone') {
+            const stackTypes = splitStackedZoneTypes(val);
+            if (stackTypes.length >= 2) {
+              const badge = document.createElement('span');
+              badge.className = 'zone-stack-badge';
+              badge.textContent = '+' + (stackTypes.length - 1);
+              td.appendChild(badge);
+            }
+          }
           // dig guidance overlay on non-dig tabs
           if (state.activeTab !== 'dig') maybeApplyDigOverlay(td, r, c);
           // onion-skin: in an empty cell, faintly show the same-tab tile on the
@@ -1401,7 +1557,7 @@ const state = {
           }
           td.addEventListener('mousedown', (e) => onCellDown(e, r, c));
           td.addEventListener('mouseenter', (e) => { moveCrosshair(r, c); moveBrushPreview(r, c); onCellEnter(e, r, c); });
-          td.addEventListener('mousemove', () => posLbl.textContent = posLabelText(r, c));
+          td.addEventListener('mousemove', () => { if (!editingPosLabel) posLbl.textContent = posLabelText(r, c); });
           td.addEventListener('contextmenu', (e) => { e.preventDefault(); /* right-click handled in onCellDown */ });
           row.appendChild(td);
         }
@@ -1562,6 +1718,15 @@ const state = {
         renderGrid();
         return;
       }
+      // Contiguous select (magic wand): Ctrl/Cmd+left-click selects the bounding
+      // rectangle of the connected same-token region under the cursor, so a whole
+      // painted room can be grabbed in one click instead of dragging a marquee to
+      // its exact corners. Empty cells are ignored (no giant empty-area selection).
+      // Overrides paste/selection like the eyedropper and set-start gestures.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.button === 0) {
+        selectContiguousRegion(r, c);
+        return;
+      }
       // Paste mode: paste buffer at clicked origin
       if (state.pasteMode && state.copyBuffer && e.button === 0) {
         historyBegin();
@@ -1605,6 +1770,7 @@ const state = {
         historyBegin();
         floodFill(r, c, val);
         historyCommit();
+        renderGrid(); // re-render so stacked-zone badges, tooltips, and the legend catch up
         return;
       }
 
@@ -1612,6 +1778,7 @@ const state = {
         historyBegin();
         state.painting = true;
         applyBrushAt(r, c, val);
+        state.lastPaintCell = { r, c };
         document.addEventListener('mouseup', onMouseUpOnce, { once: true });
         return;
       }
@@ -1633,9 +1800,22 @@ const state = {
         applyPastePreviewFromHover();
         return;
       }
-      // freehand paint while dragging
+      // freehand paint while dragging. A fast drag skips intermediate cells
+      // (mouseenter doesn't fire for every cell the pointer flies over), so
+      // interpolate a Bresenham line from the last painted cell to this one to
+      // keep the stroke gap-free. The first point is the already-painted last
+      // cell, so skip it.
       if (state.painting && state.selectedShape === 'free') {
-        applyBrushAt(r, c, state.lastPaintVal);
+        const prev = state.lastPaintCell;
+        if (prev && (prev.r !== r || prev.c !== c)) {
+          const segment = bresenhamLine(prev.r, prev.c, r, c);
+          for (let i = 1; i < segment.length; i++) {
+            applyBrushAt(segment[i][0], segment[i][1], state.lastPaintVal);
+          }
+        } else {
+          applyBrushAt(r, c, state.lastPaintVal);
+        }
+        state.lastPaintCell = { r, c };
         return;
       }
       // selection drag preview
@@ -1652,9 +1832,23 @@ const state = {
         const shape = state.selectedShape;
         let cells = [];
         if (shape === 'rect') {
-          cells = rectCells(r0, c0, r, c, !!state.shapeOutline, getBrushSize());
+          let er = r, ec = c;
+          if (e.shiftKey) {
+            const end = constrainRectEnd(r0, c0, r, c);
+            er = end.r; ec = end.c;
+            // commit reads shapeLast, so store the constrained end to keep them in sync
+            state.shapeLast = { r: er, c: ec };
+          }
+          cells = rectCells(r0, c0, er, ec, !!state.shapeOutline, getBrushSize());
         } else if (shape === 'line') {
-          cells = lineCells(r0, c0, r, c, getBrushSize());
+          let er = r, ec = c;
+          if (e.shiftKey) {
+            const end = constrainLineEnd(r0, c0, r, c);
+            er = end.r; ec = end.c;
+            // commit reads shapeLast, so store the constrained end to keep them in sync
+            state.shapeLast = { r: er, c: ec };
+          }
+          cells = lineCells(r0, c0, er, ec, getBrushSize());
         } else if (shape === 'circle') {
           cells = circleCells(r0, c0, r, c, !!state.shapeOutline, getBrushSize());
         }
@@ -1665,7 +1859,8 @@ const state = {
       const wasShaping = state.shaping && state.shapeStart;
       const wasPainting = state.painting;
       state.painting = false;
-      if (!wasShaping) { if (wasPainting) { historyCommit(); } return; }
+      state.lastPaintCell = null;
+      if (!wasShaping) { if (wasPainting) { historyCommit(); renderGrid(); } return; }
       const { r: r0, c: c0 } = state.shapeStart;
       const { r: r1, c: c1 } = state.shapeLast || state.shapeStart;
       const shape = state.selectedShape;
@@ -1684,6 +1879,7 @@ const state = {
       state.shapeStart = null;
       state.shapeLast = null;
       historyCommit();
+      renderGrid(); // re-render so stacked-zone badges, tooltips, and the legend catch up
     }
 
     function onSelectMouseUpOnce() {
@@ -1769,6 +1965,7 @@ const state = {
       const rotateBtn = document.getElementById('rotate-selection');
       const mirrorXBtn = document.getElementById('mirror-x-selection');
       const mirrorYBtn = document.getElementById('mirror-y-selection');
+      const toBpBtn = document.getElementById('selection-to-bp');
       const skipCb = document.getElementById('paste-skip-blanks');
       const has = !!state.selectionRect;
       // Transforms now act on the live selection (or the paste buffer in paste mode),
@@ -1778,6 +1975,7 @@ const state = {
       if (cutBtn) cutBtn.disabled = !has;
       if (fillBtn) fillBtn.disabled = !has;
       if (clearBtn) clearBtn.disabled = !has;
+      if (toBpBtn) toBpBtn.disabled = !has;
       if (rotateBtn) rotateBtn.disabled = !canTransform;
       if (mirrorXBtn) mirrorXBtn.disabled = !canTransform;
       if (mirrorYBtn) mirrorYBtn.disabled = !canTransform;
@@ -1815,6 +2013,42 @@ const state = {
       if (!mat || !mat.length || !mat[0].length) return;
       if (state.pasteMode) { state.pasteMode = false; clearPastePreview(); }
       state.selectionRect = { r0: 0, c0: 0, r1: mat.length - 1, c1: mat[0].length - 1, tab: state.activeTab, z: state.activeZ };
+      state.selectionMode = true;
+      applySelectionOverlayFromRect();
+      updateSelectionButtons();
+    }
+    // Contiguous select (magic wand). Flood the connected same-token region from
+    // (r,c) and set a selection to its bounding rectangle, so a whole painted room
+    // is grabbed in one Ctrl/Cmd+click. Selection is rectangular (like every other
+    // selection in the editor): exact for a rectangular room, the bounding box for
+    // an irregular blob. Empty cells are a no-op (avoids selecting the whole empty
+    // area of a sparse grid). Reuses floodFill's 4-neighbour BFS + 50000-cell cap.
+    function selectContiguousRegion(r, c) {
+      ensureGrids();
+      const mat = getMatrix(state.activeTab, state.activeZ);
+      if (!mat || r < 0 || c < 0 || r >= mat.length || c >= mat[0].length) return;
+      const target = mat[r][c];
+      if (target == null || target === '') return; // ignore empty cells
+      const R = mat.length, C = mat[0].length;
+      const NEIGHBOURS = [[1,0],[-1,0],[0,1],[0,-1]];
+      const q = [[r,c]];
+      const seen = new Set([rcKey(r,c)]);
+      let head = 0, steps = 0, cap = 50000;
+      let r0 = r, c0 = c, r1 = r, c1 = c;
+      while (head < q.length) {
+        const [rr,cc] = q[head++];
+        r0 = Math.min(r0,rr); c0 = Math.min(c0,cc); r1 = Math.max(r1,rr); c1 = Math.max(c1,cc);
+        steps++; if (steps > cap) break;
+        for (const [dr,dc] of NEIGHBOURS) {
+          const r2 = rr+dr, c2 = cc+dc;
+          if (r2<0||c2<0||r2>=R||c2>=C) continue;
+          const k = rcKey(r2,c2);
+          if (seen.has(k)) continue;
+          if (mat[r2][c2] === target) { seen.add(k); q.push([r2,c2]); }
+        }
+      }
+      if (state.pasteMode) { state.pasteMode = false; clearPastePreview(); }
+      state.selectionRect = { r0, c0, r1, c1, tab: state.activeTab, z: state.activeZ };
       state.selectionMode = true;
       applySelectionOverlayFromRect();
       updateSelectionButtons();
@@ -1885,12 +2119,62 @@ const state = {
       }
       return out;
     }
+    // Cardinal-direction remap per geometric transform, so a carved / constructed
+    // track (and a direction-sensitive #build building) keeps pointing the right way
+    // when the grid is mirrored or rotated: the matrix transform moves the cell, these
+    // helpers re-aim its direction letters. Quickfort itself does this (a north-opening
+    // bridge rotated cw opens east, ref doc sec 13), so the remap is pure geometry with
+    // no in-game check needed. The facing of every one of these tokens is unambiguous
+    // (unlike, say, a game-side toggle), so all are re-aimed.
+    const TRACK_DIR_REMAP = {
+      mx: { N:'S', S:'N', E:'E', W:'W' },        // mirror across X axis (top-bottom)
+      my: { N:'N', S:'S', E:'W', W:'E' },        // mirror across Y axis (left-right)
+      rotate: { N:'E', E:'S', S:'W', W:'N' },    // 90 clockwise
+      rotateCCW: { N:'W', W:'S', S:'E', E:'N' }, // 90 counter-clockwise
+    };
+    const TRACK_DIR_ORDER = 'NSEW'; // canonical order (matches the palette: trackNE, not trackEN)
+    function reaimTrackToken(token, kind) {
+      const map = TRACK_DIR_REMAP[kind];
+      if (!map) return token;
+      const m = /^(trackramp|track)([NSEW]+)$/.exec(token);
+      if (!m) return token;
+      const dirs = m[2].split('').map(d => map[d] || d);
+      const ordered = TRACK_DIR_ORDER.split('').filter(d => dirs.includes(d)).join('');
+      return m[1] + ordered;
+    }
+    // Direction-sensitive #build buildings. Bridges and screw pumps encode facing as a
+    // non-cardinal letter (gw = raises N, Msu = pumps from N); rollers and track stops use
+    // cardinal letters directly (rollerNS = pushes S, trackstopE = dumps E). Axles and water
+    // wheels carry an axis orientation, not a facing: a 90-degree rotation swaps the two
+    // orientations (E-W axle <-> N-S axle), a mirror leaves them unchanged. Only the leading
+    // base symbol is re-aimed; any /label, {props}, or :config tail is preserved.
+    const BRIDGE_TO_DIR = { w:'N', d:'E', x:'S', a:'W' }, DIR_TO_BRIDGE = { N:'w', E:'d', S:'x', W:'a' };
+    const PUMP_TO_DIR = { u:'N', k:'E', m:'S', h:'W' }, DIR_TO_PUMP = { N:'u', E:'k', S:'m', W:'h' };
+    const AXIS_SWAP = { Mh:'Mhs', Mhs:'Mh', Mw:'Mws', Mws:'Mw' }; // rotation only
+    function reaimBuildingToken(token, kind) {
+      const map = TRACK_DIR_REMAP[kind];
+      if (!map) return token;
+      const split = /^([^\/{:(]*)([\s\S]*)$/.exec(token);
+      const base = split[1], tail = split[2];
+      let newBase = base, bm;
+      if ((bm = /^g([wdxa])$/.exec(base))) newBase = 'g' + DIR_TO_BRIDGE[map[BRIDGE_TO_DIR[bm[1]]]];
+      else if ((bm = /^Ms([ukmh])$/.exec(base))) newBase = 'Ms' + DIR_TO_PUMP[map[PUMP_TO_DIR[bm[1]]]];
+      else if ((bm = /^(roller|trackstop)([NSEW])([NSEW]?)$/.exec(base)))
+        newBase = bm[1] + (map[bm[2]] || bm[2]) + (bm[3] ? (map[bm[3]] || bm[3]) : '');
+      else if (AXIS_SWAP[base] && (kind === 'rotate' || kind === 'rotateCCW')) newBase = AXIS_SWAP[base];
+      return newBase + tail;
+    }
+    function reaimMatTokens(mat, kind) {
+      return mat.map(row => row.map(tok => tok ? reaimBuildingToken(reaimTrackToken(tok, kind), kind) : tok));
+    }
     function applyMatTransform(mat, kind) {
-      if (kind === 'rotate') return rotateMatrixCW(mat);
-      if (kind === 'rotateCCW') return rotateMatrixCCW(mat);
-      if (kind === 'mx') return mirrorMatrixX(mat);
-      if (kind === 'my') return mirrorMatrixY(mat);
-      return mat;
+      let out;
+      if (kind === 'rotate') out = rotateMatrixCW(mat);
+      else if (kind === 'rotateCCW') out = rotateMatrixCCW(mat);
+      else if (kind === 'mx') out = mirrorMatrixX(mat);
+      else if (kind === 'my') out = mirrorMatrixY(mat);
+      else return mat;
+      return reaimMatTokens(out, kind);
     }
     function transformSelectionOrBuffer(kind) {
       // In paste mode: transform the paste buffer (preview updates live).
@@ -2421,6 +2705,27 @@ const state = {
       }
       return pts;
     }
+    // Snap a Line endpoint to the nearest horizontal, vertical, or 45-degree
+    // diagonal from the anchor. Held with Shift DURING the drag (Shift at
+    // mousedown sets the start() cursor instead), so straight corridors and
+    // clean diagonals lay down without a steady hand.
+    function constrainLineEnd(r0, c0, r1, c1) {
+      const dr = r1 - r0, dc = c1 - c0;
+      const adr = Math.abs(dr), adc = Math.abs(dc);
+      if (adr <= adc / 2) return { r: r0, c: c1 };  // near-horizontal: keep the row
+      if (adc <= adr / 2) return { r: r1, c: c0 };  // near-vertical: keep the column
+      const m = Math.min(adr, adc);                 // otherwise a 45-degree diagonal
+      return { r: r0 + Math.sign(dr) * m, c: c0 + Math.sign(dc) * m };
+    }
+    // Snap a Rect endpoint to a square (equal width and height) from the anchor.
+    // Held with Shift DURING the drag (Shift at mousedown sets the start() cursor),
+    // mirroring the Line snap; the side is the smaller of the two spans, so the
+    // square is the bounding box of a 45-degree Shift-drag line.
+    function constrainRectEnd(r0, c0, r1, c1) {
+      const dr = r1 - r0, dc = c1 - c0;
+      const m = Math.min(Math.abs(dr), Math.abs(dc));
+      return { r: r0 + Math.sign(dr) * m, c: c0 + Math.sign(dc) * m };
+    }
     function lineCells(r0,c0,r1,c1, thickness) {
       const mat = getMatrix(state.activeTab, state.activeZ);
       const R = mat.length, C = mat[0].length;
@@ -2476,17 +2781,31 @@ const state = {
       const target = mat[r][c];
       if (target === val) return;
       const R = mat.length, C = mat[0].length;
+      // If a selection is live on THIS grid, it masks the fill: the flood is
+      // clipped to the selection rectangle so it can't leak out through a gap
+      // (universal bucket-fill behavior; lets you fill one bounded room without
+      // paint spilling through a doorway). No selection = whole grid, unchanged.
+      const sel = state.selectionRect;
+      const clip = (sel && sel.tab === state.activeTab && sel.z === state.activeZ) ? sel : null;
+      const inClip = (rr, cc) => !clip || (rr >= clip.r0 && rr <= clip.r1 && cc >= clip.c0 && cc <= clip.c1);
+      if (!inClip(r, c)) return; // clicked outside the mask: nothing to fill
+      // BFS with a growing queue + head index rather than Array.shift(): shift()
+      // re-indexes the whole array (O(n)), so a large flood was O(n^2) and could
+      // lag for seconds near the 50000-cell cap. The neighbour offsets are hoisted
+      // out of the loop for the same reason. Fill result is identical (same FIFO
+      // order, same cap/clip/seen logic).
+      const NEIGHBOURS = [[1,0],[-1,0],[0,1],[0,-1]];
       const q = [[r,c]];
       const seen = new Set([rcKey(r,c)]);
-      let steps = 0, cap = 50000;
-      while (q.length) {
-        const [rr,cc] = q.shift();
+      let head = 0, steps = 0, cap = 50000;
+      while (head < q.length) {
+        const [rr,cc] = q[head++];
         applyTool(rr, cc, val);
         steps++; if (steps > cap) break;
-        const nb = [[1,0],[-1,0],[0,1],[0,-1]];
-        for (const [dr,dc] of nb) {
+        for (const [dr,dc] of NEIGHBOURS) {
           const r2 = rr+dr, c2 = cc+dc;
           if (r2<0||c2<0||r2>=R||c2>=C) continue;
+          if (!inClip(r2, c2)) continue;
           const k = rcKey(r2,c2);
           if (seen.has(k)) continue;
           if (mat[r2][c2] === target) { seen.add(k); q.push([r2,c2]); }
@@ -2544,6 +2863,21 @@ const state = {
       });
       // the locator tracks the active tool, so refresh it when the tool changes
       if (typeof refreshToolMatchHighlight === 'function') refreshToolMatchHighlight();
+      updateActiveToolName();
+    }
+
+    // Plain-English name of the active tool, shown next to the raw token in the
+    // status bar (e.g. "Tool: [b] bed") so a cryptic symbol (Msu, trackEW, ~c)
+    // reads at a glance. Reuses the cell-tooltip name helper, so it stays in sync
+    // with the hover tooltips. Hidden when the token has no friendly name (custom
+    // tokens, or when the name would just repeat the symbol).
+    function updateActiveToolName() {
+      const nameEl = document.getElementById('active-tool-name');
+      if (!nameEl) return;
+      const token = composeTokenForPaint(state.activeTab) || '';
+      const name = friendlyTokenName(state.activeTab, token, labelMapForTab(state.activeTab));
+      nameEl.textContent = name;
+      nameEl.classList.toggle('hidden', !name);
     }
 
     // ===== Recent-tokens quick-pick tray =====
@@ -2612,24 +2946,27 @@ const state = {
       navigator.clipboard?.writeText(text).catch(()=>{});
     }
 
-    // Download the current tab + Z-level as a PNG picture of the blueprint.
-    // Each cell is filled with the SAME token->colour the grid/legend/.xlsx use
-    // (via tokenFill, so user colour overrides + colourblind mode are respected)
-    // with its short glyph drawn on top, and the active section's start() cursor
-    // marked with a green ring (matching the on-screen marker). This is a purely
-    // visual snapshot for sharing/planning, it carries no Quickfort data, so
-    // use Download CSV / Export .xlsx for an importable blueprint.
-    function exportPNG() {
+    // Render the current tab + Z-level to an offscreen canvas: a PNG picture of
+    // the blueprint. Each cell is filled with the SAME token->colour the
+    // grid/legend/.xlsx use (via tokenFill, so user colour overrides +
+    // colourblind mode are respected) with its short glyph drawn on top, and the
+    // active section's start() cursor marked with a green ring (matching the
+    // on-screen marker). A purely visual snapshot for sharing/planning: it
+    // carries no Quickfort data (use Download CSV / Export .xlsx for an
+    // importable blueprint). Shared by exportPNG (download) and copyActiveTabPNG
+    // (clipboard) so the two picture outputs can never drift. Returns the canvas,
+    // or null for an empty grid / no 2D context.
+    function renderActiveTabCanvas() {
       const tabId = state.activeTab;
       const mat = getMatrix(tabId, state.activeZ);
       const rows = mat.length, cols = rows ? mat[0].length : 0;
-      if (!rows || !cols) return;
+      if (!rows || !cols) return null;
       const CELL = 26; // px per cell in the image
       const canvas = document.createElement('canvas');
       canvas.width = cols * CELL;
       canvas.height = rows * CELL;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) return null;
       // Background (empty cells) and gridline colours.
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -2660,7 +2997,13 @@ const state = {
           }
         }
       }
-      const filename = `${activeBpFileName()}-${tabId}-z${state.activeZ + 1}.png`;
+      return canvas;
+    }
+
+    function exportPNG() {
+      const canvas = renderActiveTabCanvas();
+      if (!canvas) return;
+      const filename = `${activeBpFileName()}-${state.activeTab}-z${state.activeZ + 1}.png`;
       canvas.toBlob(blob => {
         if (!blob) return;
         const url = URL.createObjectURL(blob);
@@ -2668,6 +3011,25 @@ const state = {
         a.href = url; a.download = filename; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       }, 'image/png');
+    }
+
+    // Copy the current tab + Z picture to the clipboard as an image, so it can
+    // be pasted straight into Discord / notes without a file round-trip (mirrors
+    // the "Copy to clipboard" CSV path). Silently no-ops if the browser lacks
+    // ClipboardItem / async image write, exactly like copyToClipboard.
+    function copyActiveTabPNG() {
+      const canvas = renderActiveTabCanvas();
+      if (!canvas) return;
+      try {
+        // Pass a Promise<Blob> to ClipboardItem (not a resolved blob): this keeps
+        // clipboard.write() inside the click gesture instead of behind toBlob's
+        // async callback, which some browsers (Safari) require, while Chrome/
+        // Firefox accept it too.
+        const item = new ClipboardItem({
+          'image/png': new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+        });
+        navigator.clipboard?.write?.([item]).catch(() => {});
+      } catch (e) { /* ClipboardItem unsupported in this browser */ }
     }
 
     // ----------------------------------------------------------------------
@@ -2888,12 +3250,19 @@ const state = {
         if (!tabHasContent(tab.id)) return;
         if (!firstSection) rows.push({ cells: [], scope: tab.id }); // blank separator
         firstSection = false;
-        rows.push({ meta: true, text: buildModelineText(tab.id, bp.modeline && bp.modeline[tab.id]) });
         const origin = Math.max(0, Math.min(n - 1, bp.zeroIndex | 0));
+        // Same uniform-crop + start() shift as the CSV workbook path, so a trimmed xlsx
+        // workbook sheet keeps its floors aligned and its cursor correct. Trim off => crop
+        // null => byte-identical to before.
+        const mats = [];
+        for (let z = 0; z < n; z++) mats.push(transformMatrixForExport(matAt(bp.grids, tab.id, z), tab.id, true));
+        const crop = state.exportTrimMargins ? uniformExportCrop(mats) : null;
+        const shift = crop ? { left: crop.cMin, top: crop.rMin } : null;
+        rows.push({ meta: true, text: buildModelineText(tab.id, bp.modeline && bp.modeline[tab.id], shift) });
         rows.push({ meta: true, text: `#0${origin}` });
         for (let z = 0; z < n; z++) {
           if (z > 0) rows.push({ meta: true, text: '#>' });
-          pushMatrix(transformMatrixForExport(matAt(bp.grids, tab.id, z), tab.id), tab.id);
+          pushMatrix(crop ? cropMatrixToBounds(mats[z], crop) : mats[z], tab.id);
         }
       });
       if (firstSection) rows.push({ meta: true, text: '#dig' });
@@ -2974,6 +3343,10 @@ const state = {
         notesText: state.notesText || '',
         metaText: state.metaText || '',
         zLabels: state.zLabels.slice(),
+        // View position: which floor and mode tab this blueprint was last on,
+        // so switching away and back (or a reload) returns you where you left off.
+        activeTab: state.activeTab,
+        activeZ: state.activeZ,
       };
     }
 
@@ -2999,8 +3372,12 @@ const state = {
       state.notesText = bp.notesText || '';
       state.metaText = bp.metaText || '';
       state.zLabels = Array.from(bp.zLabels || []).map(v => v || '');
-      // reset transient editing state that should not carry across blueprints
-      state.activeZ = 0;
+      // Restore the saved view position (floor) so returning to a blueprint
+      // lands where you left it; clampActiveZ (below) bounds it to this
+      // blueprint's zCount, and the mode tab is restored via setActiveTab
+      // (below). Old snapshots lacking these fields fall back to Z0 / the
+      // current tab. selection/paste/history stay transient (reset below).
+      state.activeZ = bp.activeZ | 0;
       state.selectionRect = null;
       state.copyBuffer = state.copyBuffer; // keep clipboard (handy for cross-blueprint paste)
       state.pasteMode = false;
@@ -3014,7 +3391,7 @@ const state = {
       const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(state.cols);
       const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(state.rows);
       clampAxes && clampAxes();
-      setActiveTab(state.activeTab || 'dig');
+      setActiveTab(Tabs.some(t => t.id === bp.activeTab) ? bp.activeTab : (state.activeTab || 'dig'));
       updateToolUI(); // sync tool-button highlight with this blueprint's selection (clear stale highlight)
       updateZLabel();
       renderGrid();
@@ -3056,6 +3433,33 @@ const state = {
         localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(payload));
         markAutosaved(payload.savedAt);
       } catch (_) { /* quota / private-mode / serialize error: skip silently */ }
+    }
+
+    // True if any blueprint in the workbook holds painted (non-placeholder)
+    // content. Used by the beforeunload guard and by the whole-workbook import
+    // confirms (.xlsx / .json project), so a one-time full scan of every
+    // blueprint's grids is fine at those points. Callers should
+    // saveActiveIntoWorkbook() first so the active blueprint's un-snapshotted
+    // live edits are counted.
+    function anyBlueprintHasContent() {
+      const bps = Workbook.blueprints || [];
+      for (const bp of bps) {
+        const grids = bp && bp.grids;
+        if (!grids) continue;
+        for (const tabId in grids) {
+          const layers = grids[tabId];
+          if (!Array.isArray(layers)) continue;
+          for (const mat of layers) {
+            if (!Array.isArray(mat)) continue;
+            for (const row of mat) {
+              for (const v of row) {
+                if (v && !isPlaceholderToken(v)) return true;
+              }
+            }
+          }
+        }
+      }
+      return false;
     }
 
     // A workbook payload (autosave object or a loaded .json project file) is
@@ -3142,6 +3546,9 @@ const state = {
         alert('That file is not a recognized fortplanner workbook project (.json).');
         return false;
       }
+      saveActiveIntoWorkbook(); // fold live edits in before checking for content to lose
+      if (anyBlueprintHasContent() &&
+          !window.confirm('Load this project (.json)? This replaces the entire current workbook (all blueprints).')) return false;
       applyWorkbookPayload(p);
       renderBlueprintBar();
       return true;
@@ -3320,6 +3727,51 @@ const state = {
       renderBlueprintBar();
     }
 
+    // Promote the active selection into its own new blueprint in the workbook:
+    // copy the selected rectangle across EVERY mode tab at the current Z-level
+    // into a fresh single-Z blueprint sized to the selection. The inverse of
+    // Paste Blueprint (which stamps a whole blueprint in): this extracts a
+    // designed room so it can be reused, serving the multi-blueprint library
+    // goal. Reads state only; existing blueprints are untouched.
+    function newBlueprintFromSelection() {
+      const rect = state.selectionRect;
+      if (!rect) return;
+      const z = rect.z;
+      const probe = getMatrix(rect.tab, z);
+      if (!probe || !probe.length) return;
+      const r0 = Math.max(0, Math.min(rect.r0, rect.r1));
+      const r1 = Math.min(probe.length - 1, Math.max(rect.r0, rect.r1));
+      const c0 = Math.max(0, Math.min(rect.c0, rect.c1));
+      const c1 = Math.min(probe[0].length - 1, Math.max(rect.c0, rect.c1));
+      const h = r1 - r0 + 1, w = c1 - c0 + 1;
+      if (h < 1 || w < 1) return;
+      const baseName = (Workbook.blueprints[Workbook.activeIndex] || {}).name || 'Blueprint';
+      saveActiveIntoWorkbook();
+      const grids = {}, tools = {};
+      Tabs.forEach(t => {
+        const src = getMatrix(t.id, z);
+        const dst = makeMatrix(h, w);
+        for (let r = 0; r < h; r++) {
+          for (let c = 0; c < w; c++) {
+            dst[r][c] = (src && src[r0 + r]) ? (src[r0 + r][c0 + c] ?? '') : '';
+          }
+        }
+        grids[t.id] = [dst];
+        tools[t.id] = state.selectedToolByTab[t.id] || '';
+      });
+      const bp = {
+        kind: 'grid',
+        name: uniqueBlueprintName(baseName + ' room'),
+        cols: w, rows: h, zCount: 1, zeroIndex: 0,
+        grids, selectedToolByTab: tools, modeline: {}, notesText: '', metaText: '', zLabels: [],
+        activeTab: state.activeTab, activeZ: 0,
+      };
+      Workbook.blueprints.splice(Workbook.activeIndex + 1, 0, bp);
+      Workbook.activeIndex = Workbook.activeIndex + 1;
+      loadBlueprintIntoState(bp);
+      renderBlueprintBar();
+    }
+
     // Reorder the active blueprint within the workbook by one slot. Blueprint
     // order drives the Export All section order and the .xlsx sheet order, so
     // this lets the user organize a workbook without rebuilding it. delta is
@@ -3386,16 +3838,25 @@ const state = {
       return rows.map(row => (row || []).map(cell => (cell == null ? '' : String(cell))));
     }
 
-    // Rebuild a blueprint snapshot from one imported sheet (rows of strings).
-    // Reuses the existing section splitter + multi-Z importer by routing them
-    // through a temporary editor state, then captures the result as a snapshot.
-    function rowsToBlueprint(name, rows) {
-      // Reconstruct a text blob and reuse splitSheetsFromText for section parsing.
-      const text = rows.map(r => matrixRowsToCSVLines([r])[0]).join('\n');
-      const sheets = splitSheetsFromText(text);
-      // Figure out the dimensions this blueprint needs.
+    // Convert a small free-text section (#notes / #meta) matrix into newline-joined
+    // text: first cell of each row, trimmed, blank lines dropped. Shared by the CSV
+    // import path and the per-blueprint reconstruction below.
+    function sectionTextLines(matrix) {
+      return (matrix || []).map(row => (row[0] || '').trim()).filter(l => l.length).join('\n');
+    }
+
+    // Build one blueprint snapshot from an already-split list of sheets (each
+    // {header, matrix, modeline}). The shared core behind both the .xlsx import
+    // (one worksheet -> one blueprint) and the multi-blueprint CSV import (one group
+    // of stacked sections -> one blueprint). Routes the sections through a scratch
+    // editor state so importSectionToMultiZ writes into THIS blueprint, then captures
+    // the result as a snapshot and restores the live state untouched.
+    function sheetsToBlueprint(name, sheets) {
+      // Figure out the dimensions this blueprint needs. Skip non-grid sections
+      // (#notes/#meta/#query/...) so their free text can't inflate the grid.
       let maxR = 1, maxC = 1;
       sheets.forEach(s => {
+        if (s.header && headerToTabId(s.header) == null) return;
         const [cols, rws] = findMaxDimensionsOfSection(s.matrix);
         if (rws > maxR) maxR = rws;
         if (cols > maxC) maxC = cols;
@@ -3423,7 +3884,19 @@ const state = {
       // Restore the live state we borrowed.
       state.grids = saved.grids; state.cols = saved.cols; state.rows = saved.rows;
       state.zCount = saved.zCount; state.zeroIndex = saved.zeroIndex; state.selectedToolByTab = saved.selectedToolByTab; state.zLabels = saved.zLabels;
+      // Keep this blueprint's own #notes / #meta so they travel with it.
+      const notesSheet = sheets.find(s => s.header === '#notes');
+      bp.notesText = notesSheet ? sectionTextLines(notesSheet.matrix) : '';
+      const metaSheet = sheets.find(s => s.header === '#meta');
+      bp.metaText = metaSheet ? sectionTextLines(metaSheet.matrix) : '';
       return bp;
+    }
+
+    // Rebuild a blueprint snapshot from one imported sheet (rows of strings).
+    // Reconstructs a text blob so the section splitter + multi-Z importer can run.
+    function rowsToBlueprint(name, rows) {
+      const text = rows.map(r => matrixRowsToCSVLines([r])[0]).join('\n');
+      return sheetsToBlueprint(name, splitSheetsFromText(text));
     }
 
     // Import an .xlsx workbook: each sheet becomes one named blueprint.
@@ -3432,6 +3905,9 @@ const state = {
         alert('Workbook import needs the SheetJS library, which failed to load (offline?).');
         return;
       }
+      saveActiveIntoWorkbook(); // fold live edits in before checking for content to lose
+      if (anyBlueprintHasContent() &&
+          !window.confirm('Load this workbook (.xlsx)? This replaces the entire current workbook (all blueprints).')) return;
       const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
       const next = [];
       wb.SheetNames.forEach(sn => {
@@ -3509,10 +3985,15 @@ const state = {
     // when the lone property matches the type's DEFAULT container and nothing else is
     // set (no label/config/expansion, no second property). `containers=` is left alone
     // because it sets all three counts, which the shorthand cannot reproduce.
+    // The containerless types (animal/furniture/corpses/refuse/wood/custom) have no
+    // native container, but the spec (sec 9) states a number after a containerless type
+    // "defaults to wheelbarrows", so `a{wheelbarrows=5}` <-> `a5` round-trips too.
     const STOCKPILE_CONTAINER = {
       f: 'barrels', s: 'wheelbarrows',
       n: 'bins', e: 'bins', b: 'bins', h: 'bins', l: 'bins',
-      z: 'bins', S: 'bins', g: 'bins', p: 'bins', d: 'bins'
+      z: 'bins', S: 'bins', g: 'bins', p: 'bins', d: 'bins',
+      a: 'wheelbarrows', u: 'wheelbarrows', y: 'wheelbarrows',
+      r: 'wheelbarrows', w: 'wheelbarrows', c: 'wheelbarrows'
     };
     // Container shorthand (#place): collapse a stockpile whose ONLY property is its
     // natural container count to the Quickfort `typeN` form (`f{barrels=5}` -> `f5`).
@@ -3600,13 +4081,65 @@ const state = {
       return mat.slice(rMin, rMax + 1).map(row => row.slice(cMin, cMax + 1));
     }
 
-    function transformMatrixForExport(mat, tabId) {
+    // Inclusive content bounds {rMin,rMax,cMin,cMax} of one matrix's non-empty cells,
+    // or null when the matrix is empty. Same empty-cell test as trimMatrixMargins;
+    // used by uniformExportCrop so several layers can crop to a common rectangle.
+    function matrixContentBounds(mat) {
+      if (!mat || !mat.length || !mat[0].length) return null;
+      const R = mat.length, C = mat[0].length;
+      const cellHas = (r, c) => !!String(mat[r]?.[c] ?? '').trim();
+      let rMin = 0, rMax = R - 1, cMin = 0, cMax = C - 1;
+      while (rMin <= rMax && !mat[rMin].some((_, c) => cellHas(rMin, c))) rMin++;
+      if (rMin > rMax) return null;
+      while (rMax >= rMin && !mat[rMax].some((_, c) => cellHas(rMax, c))) rMax--;
+      while (cMin <= cMax) { let any = false; for (let r = rMin; r <= rMax; r++) if (cellHas(r, cMin)) { any = true; break; } if (any) break; cMin++; }
+      while (cMax >= cMin) { let any = false; for (let r = rMin; r <= rMax; r++) if (cellHas(r, cMax)) { any = true; break; } if (any) break; cMax--; }
+      return { rMin, rMax, cMin, cMax };
+    }
+
+    // Union of the content bounds of every given matrix, or null if all are empty.
+    // A single crop rectangle over all of a tab's exported layers keeps multi-Z floors
+    // on the same column grid and yields one (dLeft,dTop) offset to shift start() by,
+    // fixing both the cursor-anchor bug and the multi-Z misalignment. For a single-Z tab
+    // the union is just that one layer's bounds, so single-Z output is byte-identical to
+    // the old per-layer trimMatrixMargins.
+    function uniformExportCrop(mats) {
+      let u = null;
+      for (const m of mats) {
+        const b = matrixContentBounds(m);
+        if (!b) continue;
+        u = u ? { rMin: Math.min(u.rMin, b.rMin), rMax: Math.max(u.rMax, b.rMax),
+                  cMin: Math.min(u.cMin, b.cMin), cMax: Math.max(u.cMax, b.cMax) } : { ...b };
+      }
+      return u;
+    }
+
+    // Crop one matrix to the given inclusive bounds. Cells outside the source (a shorter
+    // or narrower layer) become blanks so every emitted layer keeps the crop's width,
+    // even empty interior floors (they crop to blank rows of the shared column grid).
+    function cropMatrixToBounds(mat, b) {
+      if (!b) return mat;
+      const out = [];
+      for (let r = b.rMin; r <= b.rMax; r++) {
+        const src = mat && mat[r];
+        const row = [];
+        for (let c = b.cMin; c <= b.cMax; c++) row.push(src ? String(src[c] ?? '') : '');
+        out.push(row);
+      }
+      return out.length ? out : [['']];
+    }
+
+    // skipTrim lets the CSV export paths run every rewrite EXCEPT the per-layer trim, so
+    // they can instead apply one uniform crop across all emitted layers (uniformExportCrop)
+    // and shift start() by it. Callers that omit skipTrim (xlsx workbook, previews) keep the
+    // old per-layer trim behaviour unchanged.
+    function transformMatrixForExport(mat, tabId, skipTrim = false) {
       let m = mat;
       if (state.exportBarePriorities && tabId === 'dig') m = bareDigPriorities(m);
       if (state.exportAdditiveTracks && tabId === 'dig') m = additiveTracks(m);
       if (state.exportContainerShorthand && tabId === 'place') m = containerShorthand(m);
       if (state.exportAreaExpand) m = collapseRectangles(m);
-      if (state.exportTrimMargins) m = trimMatrixMargins(m);
+      if (state.exportTrimMargins && !skipTrim) m = trimMatrixMargins(m);
       return m;
     }
 
@@ -3623,7 +4156,11 @@ const state = {
     // Assemble the section header line for export: the bare "#dig" plus any markers.
     // Empty markers reproduce today's header exactly, so output is unchanged unless set.
     // Pass an explicit marker object (e.g. a saved blueprint's) or omit to use live state.
-    function buildModelineText(tabId, m) {
+    // startShift {left,top}, when set, shifts the emitted start() by the export crop offset
+    // (see uniformExportCrop) so a trimmed blueprint still anchors on the right tile. Coords
+    // clamp to 1 (a start tile that sat in a trimmed margin still yields a legal coord). Omit
+    // startShift (or leave start unset) and the emitted text is byte-identical to before.
+    function buildModelineText(tabId, m, startShift) {
       const tab = Tabs.find(t => t.id === tabId) || Tabs[0];
       let s = tab.header;
       if (m === undefined) m = state.modeline ? state.modeline[tabId] : null;
@@ -3633,9 +4170,13 @@ const state = {
       const clean = v => String(v ?? '').replace(/[(),\r\n]/g, ' ').replace(/\s+/g, ' ').trim();
       const label = clean(m.label);
       if (label) s += ` label(${label})`;
-      const sx = clean(m.startX);
-      const sy = clean(m.startY);
+      let sx = clean(m.startX);
+      let sy = clean(m.startY);
       if (sx !== '' && sy !== '') {
+        if (startShift && /^-?\d+$/.test(sx) && /^-?\d+$/.test(sy)) {
+          sx = String(Math.max(1, parseInt(sx, 10) - (startShift.left || 0)));
+          sy = String(Math.max(1, parseInt(sy, 10) - (startShift.top || 0)));
+        }
         const hint = clean(m.startHint);
         s += hint ? ` start(${sx}; ${sy}; ${hint})` : ` start(${sx}; ${sy})`;
       }
@@ -3656,10 +4197,22 @@ const state = {
       let any = false, mm;
       if ((mm = /\blabel\(\s*([^)]*?)\s*\)/i.exec(first))) { m.label = mm[1].trim(); any = true; }
       if ((mm = /\bstart\(\s*([^)]*?)\s*\)/i.exec(first))) {
-        const parts = mm[1].split(';').map(p => p.trim());
-        m.startX = parts[0] || '';
-        m.startY = parts[1] || '';
-        m.startHint = parts.slice(2).join('; ').trim();
+        // Spec sec 7: the X;Y;hint fields may be separated by ';', ',', OR a space,
+        // so a valid `start(10, 5)` / `start(10 5)` must parse the same as our own
+        // exported `start(10; 5)`. Pull the two leading integers as X and Y and keep
+        // the remainder (which may itself contain spaces) as the free-text hint. A
+        // form with no leading coords (`start(top-left)`, X;Y omitted per spec) keeps
+        // its whole content as the hint. Splitting only on ';' before this dropped the
+        // marker entirely on re-export for the comma/space forms.
+        const inner = mm[1].trim();
+        const sm = /^(-?\d+)\s*[;,\s]\s*(-?\d+)\s*(?:[;,\s]\s*(.*))?$/.exec(inner);
+        if (sm) {
+          m.startX = sm[1];
+          m.startY = sm[2];
+          m.startHint = (sm[3] || '').trim();
+        } else {
+          m.startHint = inner;
+        }
         any = true;
       }
       if (/\bhidden\(\s*\)/i.test(first)) { m.hidden = true; any = true; }
@@ -3770,10 +4323,12 @@ const state = {
     }
 
     // Append a Quickfort #notes section to a CSV string when blueprint notes are set.
-    // Each non-empty line of state.notesText becomes one message line in the section.
-    function appendNotesSection(csv) {
-      if (!state.notesText || !state.notesText.trim()) return csv;
-      const noteLines = state.notesText.split('\n')
+    // Each non-empty line becomes one message line in the section. `notesText` defaults
+    // to the active blueprint's notes, but a snapshot's notes can be passed so the
+    // workbook-CSV bundle carries each blueprint's own notes.
+    function appendNotesSection(csv, notesText = state.notesText) {
+      if (!notesText || !notesText.trim()) return csv;
+      const noteLines = notesText.split('\n')
         .map(l => l.replace(/\r/g, ''))
         .filter(l => l.trim())
         .map(csvQuoteLine);
@@ -3784,9 +4339,11 @@ const state = {
     // Return a '#meta\n...' block to append to Export All when a meta script is set.
     // Not used for per-tab exports, the meta section references other labeled sections
     // that are only present in the full all-tabs CSV, so per-tab inclusion would be wrong.
-    function buildMetaBlock() {
-      if (!state.metaText || !state.metaText.trim()) return '';
-      const metaLines = state.metaText.split('\n')
+    // `metaText` defaults to the active blueprint's meta script; a snapshot's meta can be
+    // passed so the workbook-CSV bundle carries each blueprint's own meta block.
+    function buildMetaBlock(metaText = state.metaText) {
+      if (!metaText || !metaText.trim()) return '';
+      const metaLines = metaText.split('\n')
         .map(l => l.replace(/\r/g, ''))
         .filter(l => l.trim())
         .map(csvQuoteLine);
@@ -3810,6 +4367,74 @@ const state = {
       return bundle;
     }
 
+    // Build the CSV for ONE blueprint snapshot, reading straight from the snapshot
+    // (never the live `state`), so it works for inactive blueprints without swapping
+    // the active view. Section layout mirrors blueprintToStyledWorksheet so the .xlsx
+    // and .csv workbook exports stay in step; the snapshot's own #notes / #meta are
+    // appended so shared reference scripts survive the bundle.
+    function blueprintSnapshotToCSV(bp) {
+      const n = Math.max(1, bp.zCount | 0);
+      function layerEmpty(mat) {
+        if (!mat) return true;
+        for (let r = 0; r < mat.length; r++)
+          for (let c = 0; c < (mat[0] ? mat[0].length : 0); c++)
+            if (mat[r][c]) return false;
+        return true;
+      }
+      function matAt(tabId, zDisp) {
+        const layers = (bp.grids && bp.grids[tabId]) || [];
+        const len = Math.max(1, layers.length);
+        const zz = (len - 1) - Math.max(0, Math.min(len - 1, zDisp));
+        return layers[zz];
+      }
+      function tabHasContent(tabId) {
+        for (let z = 0; z < n; z++) if (!layerEmpty(matAt(tabId, z))) return true;
+        return false;
+      }
+      const lines = [];
+      let firstSection = true;
+      Tabs.forEach(tab => {
+        if (!tabHasContent(tab.id)) return;
+        if (!firstSection) lines.push(''); // blank line between this blueprint's tabs
+        firstSection = false;
+        const origin = Math.max(0, Math.min(n - 1, bp.zeroIndex | 0));
+        // Transform every emitted layer first (skip per-layer trim), then crop them all to
+        // one union rectangle so multi-Z floors stay column-aligned and start() shifts by a
+        // single offset. Trim off => crop null => byte-identical to before.
+        const mats = [];
+        for (let z = 0; z < n; z++) mats.push(transformMatrixForExport(matAt(tab.id, z), tab.id, true));
+        const crop = state.exportTrimMargins ? uniformExportCrop(mats) : null;
+        const shift = crop ? { left: crop.cMin, top: crop.rMin } : null;
+        lines.push(buildModelineText(tab.id, bp.modeline && bp.modeline[tab.id], shift));
+        lines.push(`#0${origin}`);
+        for (let z = 0; z < n; z++) {
+          if (z > 0) lines.push('#>');
+          const rows = matrixRowsToCSVLines(crop ? cropMatrixToBounds(mats[z], crop) : mats[z]);
+          for (const r of rows) lines.push(r);
+        }
+      });
+      if (firstSection) lines.push('#dig'); // wholly empty blueprint: bare section header
+      // Pass '' (never undefined) so the snapshot's own notes/meta are used: an
+      // undefined arg would fall through to the default and pull the ACTIVE blueprint's.
+      let text = appendNotesSection(lines.join('\n'), bp.notesText || '');
+      text += buildMetaBlock(bp.metaText || '');
+      return text;
+    }
+
+    // Assemble a full multi-blueprint CSV bundle: every blueprint in the workbook, each
+    // as its own stack of modeline sections separated by a blank line. Quickfort reads
+    // consecutive modeline blocks in one file as separate blueprints, so this is the
+    // plain-text counterpart to the one-sheet-per-blueprint .xlsx workbook export (and
+    // fills the coverage audit's "multiple blueprints per file" gap). The active
+    // blueprint is flushed into its slot first so its latest edits are included.
+    function buildWorkbookCSV() {
+      saveActiveIntoWorkbook();
+      return Workbook.blueprints
+        .map(blueprintSnapshotToCSV)
+        .filter(s => s && s.trim())
+        .join('\n\n');
+    }
+
     // Multi-z CSV for a single tab, using #> between floors
     function tabToMultiZCSV(tabId, includeNotes = true) {
       // Two modes:
@@ -3819,17 +4444,21 @@ const state = {
       // includeNotes: false when called from Export All (the caller appends #notes once at the end).
       ensureGrids();
       const tab = Tabs.find(t => t.id === tabId) || Tabs[0];
-      const lines = [buildModelineText(tabId)];
+      const lines = [];
       const n = state.zCount;
 
       if (state.preserveZOrder) {
         // Preserve: include origin metadata for round-trip within editor
         const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex|0));
+        const mats = [];
+        for (let z = 0; z < n; z++) mats.push(transformMatrixForExport(getMatrix(tabId, z), tabId, true));
+        const crop = state.exportTrimMargins ? uniformExportCrop(mats) : null;
+        const shift = crop ? { left: crop.cMin, top: crop.rMin } : null;
+        lines.push(buildModelineText(tabId, undefined, shift));
         lines.push(`#0${origin}`);
         for (let z = 0; z < n; z++) {
           if (z > 0) lines.push('#>');
-          const mat = getMatrix(tabId, z);
-          const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
+          const rows = matrixRowsToCSVLines(crop ? cropMatrixToBounds(mats[z], crop) : mats[z]);
           for (const r of rows) lines.push(r);
         }
         return includeNotes ? appendNotesSection(lines.join('\n')) : lines.join('\n');
@@ -3850,6 +4479,7 @@ const state = {
         while (low <= high && isEmptyLayer(low)) low++;   // trim top
         if (low > high) {
           // All layers empty: export a single origin layer if possible, else top
+          lines.push(buildModelineText(tabId));
           const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex|0));
           const mat = getMatrix(tabId, origin);
           const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
@@ -3862,17 +4492,23 @@ const state = {
         // equivalent to the blank grids on re-import (import does currentZ += N),
         // just shorter. With no empty interior floors every step is 1 ("#>"), so
         // existing multi-z output is byte-unchanged.
+        // Transform the emitted floors first (skip per-layer trim), crop them to one
+        // union rectangle, and shift start() by it (uniform crop keeps floors aligned).
+        const emit = [];
         let prevZ = null;
         for (let z = low; z <= high; z++) {
           if (isEmptyLayer(z)) continue;
-          if (prevZ !== null) {
-            const step = z - prevZ;
-            lines.push(step > 1 ? `#>${step}` : '#>');
-          }
-          const mat = getMatrix(tabId, z);
-          const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
-          for (const r of rows) lines.push(r);
+          const step = prevZ === null ? 0 : z - prevZ;
+          emit.push({ step, mat: transformMatrixForExport(getMatrix(tabId, z), tabId, true) });
           prevZ = z;
+        }
+        const crop = state.exportTrimMargins ? uniformExportCrop(emit.map(e => e.mat)) : null;
+        const shift = crop ? { left: crop.cMin, top: crop.rMin } : null;
+        lines.push(buildModelineText(tabId, undefined, shift));
+        for (const e of emit) {
+          if (e.step) lines.push(e.step > 1 ? `#>${e.step}` : '#>');
+          const rows = matrixRowsToCSVLines(crop ? cropMatrixToBounds(e.mat, crop) : e.mat);
+          for (const r of rows) lines.push(r);
         }
         return includeNotes ? appendNotesSection(lines.join('\n')) : lines.join('\n');
       }
@@ -3882,7 +4518,7 @@ const state = {
     function tabToMultiZCSVTrimmed(tabId) {
       ensureGrids();
       const tab = Tabs.find(t => t.id === tabId) || Tabs[0];
-      const lines = [buildModelineText(tabId)];
+      const lines = [];
       const n = state.zCount;
       function isEmptyLayer(zDisp) {
         const mat = getMatrix(tabId, zDisp);
@@ -3899,17 +4535,24 @@ const state = {
       while (low <= high && isEmptyLayer(low)) low++;   // trim top
       if (low > high) {
         // All layers empty: export a single origin layer if possible, else top
+        lines.push(buildModelineText(tabId));
         const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex|0));
         const mat = getMatrix(tabId, origin);
         const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
         for (const r of rows) lines.push(r);
         return lines.join('\n');
       }
+      // Transform every emitted floor first (skip per-layer trim), crop them to one union
+      // rectangle so floors stay column-aligned, and shift start() by that offset.
+      const mats = [];
+      for (let z = low; z <= high; z++) mats.push(transformMatrixForExport(getMatrix(tabId, z), tabId, true));
+      const crop = state.exportTrimMargins ? uniformExportCrop(mats) : null;
+      const shift = crop ? { left: crop.cMin, top: crop.rMin } : null;
+      lines.push(buildModelineText(tabId, undefined, shift));
       let first = true;
-      for (let z = low; z <= high; z++) {
+      for (let i = 0; i < mats.length; i++) {
         if (!first) lines.push('#>');
-        const mat = getMatrix(tabId, z);
-        const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
+        const rows = matrixRowsToCSVLines(crop ? cropMatrixToBounds(mats[i], crop) : mats[i]);
         for (const r of rows) lines.push(r);
         first = false;
       }
@@ -3930,6 +4573,41 @@ const state = {
       renderLayers();
     }
 
+    // Draw a small map of everything painted on display floor `d` (all mode tabs
+    // combined, top tab wins per cell) into `canvas`, preserving the grid's aspect
+    // ratio inside the fixed box. Empty / placeholder cells stay blank. Backing store
+    // is 2x the CSS box (80x52 for a 40x26 thumbnail) so the map stays crisp on hidpi.
+    function renderLayerThumb(canvas, d) {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+      const mats = Tabs.map(t => ({ id: t.id, mat: getMatrix(t.id, d) }));
+      let rows = 0, cols = 0;
+      for (const { mat } of mats) { if (mat && mat.length) { rows = mat.length; cols = mat[0].length; break; } }
+      if (!rows || !cols) return;
+      const cell = Math.min(W / cols, H / rows);
+      if (!(cell > 0)) return;
+      const offX = (W - cols * cell) / 2, offY = (H - rows * cell) / 2;
+      const sz = Math.max(1, Math.ceil(cell));
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          let fill = null;
+          for (const { id, mat } of mats) {
+            const v = mat && mat[r] ? mat[r][c] : '';
+            if (v && !isPlaceholderToken(v)) {
+              const info = tokenFill(id, v);
+              fill = info ? info.fill : '#8a8a8a';
+              break;
+            }
+          }
+          if (!fill) continue;
+          ctx.fillStyle = fill;
+          ctx.fillRect(offX + c * cell, offY + r * cell, sz, sz);
+        }
+      }
+    }
+
     // Z-levels (layers) list in the right panel. Top row = topmost display layer.
     function renderLayers() {
       const host = document.getElementById('layers-list');
@@ -3940,6 +4618,12 @@ const state = {
         const row = document.createElement('div');
         row.className = 'layer-row' + (d === state.activeZ ? ' active' : '');
         row.dataset.z = d;
+        const thumb = document.createElement('canvas');
+        thumb.className = 'lr-thumb';
+        thumb.width = 80; thumb.height = 52; // 2x the 40x26 CSS box, for crisp hidpi
+        thumb.title = 'Floor preview (all mode tabs combined)';
+        renderLayerThumb(thumb, d);
+        row.appendChild(thumb);
         const z = document.createElement('span');
         z.className = 'lr-z';
         z.textContent = 'Z' + (rel === 0 ? '0' : (rel > 0 ? '+' + rel : String(rel)));
@@ -4444,7 +5128,7 @@ const state = {
       if (tabId === 'dig') {
         DIG_BASIC.forEach(([v,l]) => { if (v) m[v] = l; });
         DIG_FLAGS.forEach(([v,l]) => { m[v] = l; });
-        DIG_TRACKS.forEach(v => { m[v] = v; });
+        DIG_TRACKS.forEach(([v,l]) => { m[v] = l; });
       } else if (tabId === 'place') {
         PLACE_STOCKPILES.forEach(([v,l]) => { if (v) m[v] = l; });
       } else if (tabId === 'zone') {
@@ -4961,7 +5645,7 @@ const state = {
       if (!token) return '';
       let s = String(token);
       s = s.replace(/\{[^}]*\}/g, ''); // remove {...}
-      s = s.replace(/:=.*$/, ''); // remove :=config
+      s = s.replace(/:.*$/, ''); // remove :config (any op: = - +), braces already gone
       // remove trailing extent like (3x3)
       s = s.replace(/\(\s*\d+\s*x\s*\d+\s*\)\s*$/, '');
       return s;
@@ -5171,6 +5855,20 @@ const state = {
               if (grp) present.set('__group__'+grp, grp);
               continue;
             }
+            // Stacked overlapping zones (n{...}t{...}): give EACH contained zone its
+            // own legend row, matching the grid's colour-split cell and the tooltip.
+            // Without this the legend keyed only the first type, so the overlap's other
+            // zones were invisible even though their colour shows in the split cell.
+            if (tab === 'zone') {
+              const stackTypes = splitStackedZoneTypes(raw);
+              if (stackTypes.length >= 2) {
+                stackTypes.forEach(t => {
+                  const k = t.charAt(0);
+                  if (k) present.set(k, lookup[k] || lookup[t] || t);
+                });
+                continue;
+              }
+            }
             const base = (tab === 'dig') ? stripDigMarkersAndPriority(raw) : stripPropsAndCfg(raw);
             const key = (tab === 'place') ? base : base.charAt(0);
             if (!key) continue;
@@ -5292,6 +5990,26 @@ const state = {
       if (scopeId === 'zone') {
         const base = stripPropsAndCfg(s);
         const hasProps = base !== s;
+        // Stacked overlapping zones (n{...}t{...}): split the cell background
+        // across each contained zone's colour so the overlap reads at a glance,
+        // matching the "+N" badge and the tooltip. Single-zone cells keep the
+        // solid first-type colour below. Mirrors the #place multi-type gradient;
+        // export/legend still use the lead colour via getZoneColorForToken.
+        const stackTypes = splitStackedZoneTypes(s);
+        if (stackTypes.length >= 2) {
+          const grad = gradientForLetters(stackTypes.map(t => t.charAt(0)), COLOR_ZONE);
+          if (grad) {
+            const first = COLOR_ZONE[stackTypes[0].charAt(0)] || '#444';
+            td.style.background = grad;
+            if (hasProps) {
+              td.classList.add('mini-token');
+              td.style.color = uniqueTextColorForKey(s, first);
+            } else {
+              ensureReadableText(td, first);
+            }
+            return;
+          }
+        }
         const key = base.charAt(0);
         const col = COLOR_ZONE[key];
         if (col) {
@@ -5549,6 +6267,55 @@ const state = {
         inp.addEventListener('blur', commit);
         lbl.textContent = '';
         lbl.appendChild(inp);
+        inp.select();
+      });
+    })();
+
+    // Click-to-jump coordinate: click the pointer-position readout (bottom status strip)
+    // and type "X, Y" (1-indexed, same numbering the readout itself shows on hover) to
+    // scroll that cell into view and briefly ring it. Accepts a comma, semicolon, or
+    // space separator, matching the start() marker parser. Read-only: no paint/history.
+    (function wirePosLabelEdit() {
+      const stat = document.getElementById('pos-stat');
+      if (!stat || !posLbl) return;
+      stat.addEventListener('click', () => {
+        if (editingPosLabel) return;
+        editingPosLabel = true;
+        const inp = document.createElement('input');
+        inp.type = 'text'; inp.inputMode = 'text'; inp.maxLength = 12;
+        inp.placeholder = 'X, Y';
+        inp.style.cssText = 'width:56px;background:transparent;border:none;color:var(--ink);font-family:ui-monospace,monospace;font-size:inherit;text-align:center;padding:0;margin:0;outline:none;';
+        let done = false;
+        function restore() {
+          editingPosLabel = false;
+          posLbl.textContent = '-';
+        }
+        function commit() {
+          if (done) return; done = true;
+          const m = inp.value.trim().match(/^(-?\d+)\s*[,;\s]\s*(-?\d+)$/);
+          if (m) {
+            const c = parseInt(m[1], 10) - 1, r = parseInt(m[2], 10) - 1;
+            const mat = getMatrix(state.activeTab, state.activeZ);
+            if (r >= 0 && r < mat.length && c >= 0 && c < mat[0].length) {
+              const tbl = gridContainerEl && gridContainerEl.querySelector('table.grid');
+              const cell = tbl && tbl.rows[r] && tbl.rows[r].cells[c];
+              if (cell) {
+                cell.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+                cell.classList.add('match-focus');
+                setTimeout(() => cell.classList.remove('match-focus'), 1200);
+              }
+            }
+          }
+          restore();
+        }
+        inp.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); commit(); }
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done = true; restore(); }
+        });
+        inp.addEventListener('blur', commit);
+        posLbl.textContent = '';
+        posLbl.appendChild(inp);
+        inp.focus();
         inp.select();
       });
     })();
@@ -5863,6 +6630,79 @@ const state = {
       if (b.minR > 0) deleteRows(0, b.minR);        // empty rows above the highest content
     }
 
+    // Mirror each section's modeline start() cursor onto its flipped tile. axis 'h' flips
+    // left-right (startX -> cols+1-X), 'v' flips top-bottom (startY -> rows+1-Y). 1-based
+    // coords, so the reflection of column X across a width-W grid is W+1-X.
+    function flipStartMarkers(axis) {
+      if (!state.modeline) return;
+      const key = axis === 'h' ? 'startX' : 'startY';
+      const span = axis === 'h' ? state.cols : state.rows;
+      Object.keys(state.modeline).forEach(tab => {
+        const m = state.modeline[tab];
+        if (!m) return;
+        const v = parseInt(m[key], 10);
+        if (isNaN(v)) return;
+        m[key] = String(span + 1 - v);
+      });
+      if (typeof syncModelineUI === 'function') syncModelineUI();
+    }
+    // Flip the WHOLE active blueprint (every tab, every Z-level) in place: axis 'h' mirrors
+    // left-right, 'v' mirrors top-bottom. For laying out symmetric forts (build one wing, then
+    // flip a duplicate blueprint for the other). Structural op like row/col insert: it moves
+    // every cell's coordinates, so it resets the paint history and mirrors each section's
+    // start() marker. Direction-sensitive tokens are re-aimed via applyMatTransform: carved /
+    // constructed tracks (trackNE becomes trackNW on a left-right flip) plus directional bridges,
+    // screw pumps, rollers, track stops, and axle / water-wheel orientation.
+    function flipWholeBlueprint(axis) {
+      const kind = axis === 'h' ? 'my' : 'mx';
+      Tabs.forEach(t => {
+        const layers = state.grids[t.id];
+        if (!layers) return;
+        for (let z = 0; z < layers.length; z++) layers[z] = applyMatTransform(layers[z], kind);
+      });
+      flipStartMarkers(axis);
+      afterStructuralResize();
+      updateZLabel(); // every floor's content moved: rebuild the Z-panel thumbnails
+    }
+    // Rotate each section's modeline start() cursor onto its rotated tile. A 90-degree
+    // rotation swaps the grid axes, so both coords move together and are recomputed from
+    // the OLD dimensions (captured before the swap). 1-based coords: CW maps (X, Y) to
+    // (oldRows+1-Y, X); CCW maps (X, Y) to (Y, oldCols+1-X). Needs BOTH coords set.
+    function rotateStartMarkers(dir, oldRows, oldCols) {
+      if (!state.modeline) return;
+      Object.keys(state.modeline).forEach(tab => {
+        const m = state.modeline[tab];
+        if (!m) return;
+        const x = parseInt(m.startX, 10), y = parseInt(m.startY, 10);
+        if (isNaN(x) || isNaN(y)) return; // a start() point needs both X and Y to rotate
+        if (dir === 'ccw') { m.startX = String(y); m.startY = String(oldCols + 1 - x); }
+        else { m.startX = String(oldRows + 1 - y); m.startY = String(x); }
+      });
+      if (typeof syncModelineUI === 'function') syncModelineUI();
+    }
+    // Rotate the WHOLE active blueprint (every tab, every Z-level) 90 degrees in place:
+    // dir 'cw' clockwise, 'ccw' counter-clockwise. Companion to flipWholeBlueprint, for
+    // reorienting a whole design (a corridor block laid the wrong way, a wing that belongs
+    // on the other axis). A 90-degree rotation SWAPS the grid dimensions (WxH becomes HxW),
+    // so it updates state.cols/state.rows and rotates each section's start() marker. Like
+    // the row/col structural ops it resets the paint history (every coordinate moved).
+    // Direction-sensitive tokens are re-aimed via applyMatTransform: carved / constructed
+    // tracks plus directional bridges, screw pumps, rollers, track stops, and axle /
+    // water-wheel orientation (a north-opening bridge rotated cw opens east, ref doc sec 13).
+    function rotateWholeBlueprint(dir) {
+      const kind = dir === 'ccw' ? 'rotateCCW' : 'rotate';
+      const oldRows = state.rows, oldCols = state.cols;
+      Tabs.forEach(t => {
+        const layers = state.grids[t.id];
+        if (!layers) return;
+        for (let z = 0; z < layers.length; z++) layers[z] = applyMatTransform(layers[z], kind);
+      });
+      state.cols = oldRows; state.rows = oldCols; // axes swap on a 90-degree rotation
+      rotateStartMarkers(dir, oldRows, oldCols);
+      afterStructuralResize();
+      updateZLabel(); // every floor's content moved: rebuild the Z-panel thumbnails
+    }
+
     zAddBtn?.addEventListener('click', () => { addTopLayer(); state.activeZ = 0; updateZLabel(); renderGrid(); });
     zDelBtn?.addEventListener('click', () => { deleteActiveLayer(); });
     zDupBtn?.addEventListener('click', () => { duplicateActiveLayer(); });
@@ -5974,6 +6814,8 @@ const state = {
     fillSelBtn?.addEventListener('click', () => fillSelectedArea());
     const clearSelBtn = document.getElementById('clear-selection');
     clearSelBtn?.addEventListener('click', () => clearSelection());
+    const toBpSelBtn = document.getElementById('selection-to-bp');
+    toBpSelBtn?.addEventListener('click', () => newBlueprintFromSelection());
     const pasteSelBtn = document.getElementById('paste-selection');
     pasteSelBtn?.addEventListener('click', () => {
       if (!state.copyBuffer) return;
@@ -6023,6 +6865,20 @@ const state = {
       const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
       const isEditable = tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable);
       if (e.key === 'Escape') {
+        // Cancel an in-progress shape drag (rect/line/circle) before it commits on
+        // mouseup. The preview only toggles CSS classes (no cells are written until
+        // mouseup), and the drag opened an empty history transaction at mousedown, so
+        // discarding it needs no rollback: onMouseUpOnce then sees wasShaping false and
+        // does nothing. Handled first so Esc cancels the active drag rather than the
+        // selection underneath it.
+        if (state.shaping && state.shapeStart) {
+          state.shaping = false;
+          state.shapeStart = null;
+          state.shapeLast = null;
+          state.currentAction = null;
+          clearShapePreview();
+          return;
+        }
         if (state.pasteMode) { state.pasteMode = false; clearPastePreview(); updateSelectionButtons(); return; }
         clearSelection();
         return;
@@ -6245,6 +7101,9 @@ const state = {
     document.getElementById('downloadpng')?.addEventListener('click', () => {
       exportPNG();
     });
+    document.getElementById('copypng')?.addEventListener('click', () => {
+      copyActiveTabPNG();
+    });
     document.getElementById('exportallxlsx').addEventListener('click', () => {
       exportAllXlsx();
     });
@@ -6252,6 +7111,9 @@ const state = {
     // Multi-sheet workbook button + blueprint bar wiring
     document.getElementById('exportworkbook').addEventListener('click', () => {
       exportWorkbookXlsx();
+    });
+    document.getElementById('exportworkbookcsv')?.addEventListener('click', () => {
+      download(`${safeExportName(Workbook.name)}-all-blueprints.csv`, buildWorkbookCSV());
     });
     document.getElementById('loadworkbook').addEventListener('click', () => {
       document.getElementById('workbookinput').click();
@@ -6362,8 +7224,8 @@ const state = {
         if (!el) return;
         el.addEventListener('input', () => {
           getModeline(state.activeTab)[key] = el.value;
-          // live-update the on-grid start() marker as its coords change
-          if (key === 'startX' || key === 'startY') renderGrid();
+          // live-update the on-grid start() marker as coords change
+          if (key === 'startX' || key === 'startY') { renderGrid(); }
         });
         el.addEventListener('click', (e) => e.stopPropagation());
         el.addEventListener('keydown', (e) => e.stopPropagation());
@@ -6410,9 +7272,15 @@ const state = {
           state.metaText = ta.value;
         });
       }
-      // Repopulate the marker fields from the active tab whenever the Export menu opens.
-      const exportBtn = document.getElementById('export-btn');
-      if (exportBtn) exportBtn.addEventListener('click', () => { try { syncModelineUI(); } catch (_) {} });
+      // Repopulate the modeline markers / notes / meta fields from the active tab whenever
+      // the Blueprint menu opens. Those fields live in the Blueprint menu (they moved out of
+      // the Export menu to declutter it), so syncing on the Export button left them stale after
+      // a tab switch: opening Blueprint would show, and let you edit against, another tab's
+      // record. setActiveTab does not sync (the fields are hidden until the menu opens), so this
+      // open-time refresh is the sync point. Export output reads state.modeline directly, not
+      // these inputs, so the Export menu needs no sync.
+      const blueprintBtn = document.getElementById('blueprint-btn');
+      if (blueprintBtn) blueprintBtn.addEventListener('click', () => { try { syncModelineUI(); } catch (_) {} });
       document.addEventListener('click', (e) => {
         if (e.target.closest && e.target.closest('.menu-wrap')) return;
         closeAll(null);
@@ -6510,11 +7378,55 @@ const state = {
     }
 
     // Load CSV(s) into grids
+    // Group the flat sheet list from splitSheetsFromText into per-blueprint groups.
+    // Quickfort reads consecutive modeline blocks in one file as separate blueprints;
+    // this editor bundles the dig/build/place/zone/burrow sections of ONE design as
+    // the tabs of a single blueprint. So a new blueprint begins when a grid-mode
+    // section repeats a tab already used in the current group. Non-grid sections
+    // (#notes/#meta/#query/...) attach to the current group. This is the inverse of
+    // buildWorkbookCSV, which stacks each blueprint's sections in Tabs order.
+    function groupSheetsIntoBlueprints(sheets) {
+      const groups = [];
+      let cur = null, usedTabs = null;
+      const startGroup = () => { cur = []; usedTabs = new Set(); groups.push(cur); };
+      sheets.forEach(s => {
+        const id = s.header ? headerToTabId(s.header) : null;
+        const isGridTab = id != null && Tabs.some(t => t.id === id);
+        if (cur === null || (isGridTab && usedTabs.has(id))) startGroup();
+        cur.push(s);
+        if (isGridTab) usedTabs.add(id);
+      });
+      return groups;
+    }
+
+    // Import a CSV that stacks several blueprints (each its own run of modeline
+    // sections) into separate workbook slots, REPLACING the current workbook. The
+    // inverse of "Export Workbook (CSV)", and the plain-text peer of the .xlsx
+    // workbook import (which also replaces the workbook, one sheet per blueprint).
+    // Each blueprint is named from its first tab's label() marker when present,
+    // otherwise "Blueprint N".
+    function importMultiBlueprintCSV(groups) {
+      const next = groups.map((g, i) => {
+        let name = '';
+        for (const s of g) { if (s.modeline && s.modeline.label) { name = s.modeline.label; break; } }
+        return sheetsToBlueprint(name || `Blueprint ${i + 1}`, g);
+      });
+      if (!next.length) return;
+      Workbook.blueprints = next;
+      Workbook.activeIndex = 0;
+      loadBlueprintIntoState(Workbook.blueprints[0]);
+      renderBlueprintBar();
+    }
+
     // Shared import pipeline: parse CSV text and load it into the editor.
-    // Called by both the file-picker and the paste-from-clipboard button.
+    // Called by the file-picker, the paste-from-clipboard button, and drag-drop.
     function importCSVText(text) {
       const sheets = splitSheetsFromText(text);
       if (!sheets.length) return;
+      // A file that stacks several blueprints (consecutive modeline runs) imports
+      // into separate workbook slots; a single blueprint uses the in-place path below.
+      const groups = groupSheetsIntoBlueprints(sheets);
+      if (groups.length > 1) { importMultiBlueprintCSV(groups); return; }
       state.zLabels = []; // CSV has no label data; start fresh so stale labels from the prior blueprint don't persist
       // compute max dimensions (ignore control rows like #> / #< / #0N).
       // Skip non-grid sections (#notes/#ignore/#aliases/#query/#meta) so their
@@ -6544,16 +7456,12 @@ const state = {
       });
       // Restore #notes content (replace whatever was in the textarea)
       const notesSheet = sheets.find(s => s.header === '#notes');
-      state.notesText = notesSheet
-        ? (notesSheet.matrix || []).map(row => (row[0] || '').trim()).filter(l => l.length).join('\n')
-        : '';
+      state.notesText = notesSheet ? sectionTextLines(notesSheet.matrix) : '';
       const bpNotesEl = document.getElementById('bp-notes');
       if (bpNotesEl) bpNotesEl.value = state.notesText;
       // Restore #meta script content
       const metaSheet = sheets.find(s => s.header === '#meta');
-      state.metaText = metaSheet
-        ? (metaSheet.matrix || []).map(row => (row[0] || '').trim()).filter(l => l.length).join('\n')
-        : '';
+      state.metaText = metaSheet ? sectionTextLines(metaSheet.matrix) : '';
       const metaScriptEl = document.getElementById('meta-script');
       if (metaScriptEl) metaScriptEl.value = state.metaText;
       if (firstTab) setActiveTab(firstTab);
@@ -6583,6 +7491,68 @@ const state = {
       }).catch(err => {
         console.error('Clipboard read failed (permission denied?):', err);
       });
+    });
+
+    // Curated starter blueprints for newcomers. Each is valid Quickfort CSV loaded
+    // through the same importCSVText pipeline as Load CSV, so no new import logic.
+    // They demonstrate the editor's multi-tab strength (a bedroom is dug on Dig AND
+    // furnished on Build; a dining hall is built AND zoned) plus common syntax: the
+    // start() cursor marker, container shorthand (f5), and multi-type piles (bz).
+    // Backticks are intentional empty "chalk-line" cells (spec sec 1) that keep each
+    // row's column count explicit. Loading REPLACES the current blueprint, exactly
+    // like Load CSV; the guard below confirms first when the blueprint has content.
+    const EXAMPLE_BLUEPRINTS = {
+      bedroom: {
+        label: 'Bedroom',
+        csv: [
+          '#dig label(bedroom) start(2;2) Carve a 3x3 bedroom',
+          'd,d,d',
+          'd,d,d',
+          'd,d,d',
+          '#build',
+          'b,f,`',
+          '`,`,`',
+          '`,d,`'
+        ].join('\n')
+      },
+      stockpiles: {
+        label: 'Stockpiles',
+        csv: [
+          '#place label(stockpiles) Food, stone, and a bars+ammo pile',
+          'f5,f5,s,s',
+          'f5,f5,s,s',
+          'bz,bz,`,`',
+          'bz,bz,`,`'
+        ].join('\n')
+      },
+      dining: {
+        label: 'Dining hall',
+        csv: [
+          '#build label(dining) Tables and chairs, with a dining-hall zone over them',
+          't,c,`,t,c',
+          '`,`,`,`,`',
+          't,c,`,t,c',
+          '#zone',
+          'h,h,h,h,h',
+          'h,h,h,h,h',
+          'h,h,h,h,h'
+        ].join('\n')
+      }
+    };
+
+    // Load an example into the current blueprint. Confirms first if the blueprint
+    // already has painted content, so an example click never silently discards work
+    // (matches the confirm-before-destructive pattern used across the editor).
+    function loadExampleBlueprint(key) {
+      const ex = EXAMPLE_BLUEPRINTS[key];
+      if (!ex) return;
+      if (Tabs.some(t => tabHasContent(t.id)) &&
+          !window.confirm('Load the "' + ex.label + '" example? This replaces the current blueprint\'s content.')) return;
+      try { importCSVText(ex.csv); }
+      catch (err) { console.error('Failed to load example blueprint:', err); }
+    }
+    Object.keys(EXAMPLE_BLUEPRINTS).forEach(key => {
+      document.getElementById('example-' + key)?.addEventListener('click', () => loadExampleBlueprint(key));
     });
 
     // Drag-and-drop file import: drop a file anywhere on the window to load it,
@@ -6658,8 +7628,9 @@ const state = {
     //  - #place: container shorthand `f5`/`s2`/`e3` -> `f{barrels=5}` etc., and the
     //    multi-type form `se5` -> `se{bins=5}`, per the spec the count attaches to
     //    the immediately-preceding (last) type letter, so we key the container off
-    //    that letter (STOCKPILE_CONTAINER). Only converts when the last letter is a
-    //    container-bearing stockpile type; other letter+digit cells stay verbatim.
+    //    that letter (STOCKPILE_CONTAINER). Containerless types map to wheelbarrows
+    //    per spec sec 9 (`a5` -> `a{wheelbarrows=5}`). Only converts when the last
+    //    letter is a known stockpile type; other letter+digit cells stay verbatim.
     // Anything else is returned verbatim, so all other cells import byte-faithfully.
     function normalizeImportToken(tabId, tok) {
       const t = String(tok);
@@ -6737,15 +7708,24 @@ const state = {
               }
             }
           }
-          const expM = /^(.*)\((\d+)x(\d+)\)$/.exec(val);
+          const expM = /^(.*)\((-?\d+)x(-?\d+)\)$/.exec(val);
           if (expM) {
-            // Expand area-expansion token: token(WxH) fills a W-wide H-tall block.
+            // Area-expansion token token(WxH) fills a W-wide H-tall block from this cell.
+            // Per spec sec 3 a NEGATIVE W or H expands from the opposite corner: W<0 fills
+            // leftward, H<0 fills upward (e.g. `ga(4x-2)` up-left). The sign gives the step
+            // direction, the magnitude the run length; positive-only tokens fill down-right
+            // exactly as before. Cells are clamped per-tile so an arm can't run off-grid.
+            // (findMaxDimensionsOfSection already sizes the grid for signed dims to match.)
             const base = normalizeImportToken(tabId, expM[1]);
-            const ew = Math.min(parseInt(expM[2], 10), state.cols - c);
-            const eh = Math.min(parseInt(expM[3], 10), state.rows - rr);
-            for (let dr = 0; dr < eh; dr++) {
-              for (let dc = 0; dc < ew; dc++) {
-                matrices[currentZ][rr + dr][c + dc] = base;
+            const rawW = parseInt(expM[2], 10), rawH = parseInt(expM[3], 10);
+            const stepC = rawW < 0 ? -1 : 1, stepR = rawH < 0 ? -1 : 1;
+            for (let dr = 0; dr < Math.abs(rawH); dr++) {
+              const rrr = rr + dr * stepR;
+              if (rrr < 0 || rrr >= state.rows) continue;
+              for (let dc = 0; dc < Math.abs(rawW); dc++) {
+                const cc = c + dc * stepC;
+                if (cc < 0 || cc >= state.cols) continue;
+                matrices[currentZ][rrr][cc] = base;
               }
             }
           } else if (val !== '') {
@@ -6816,8 +7796,22 @@ const state = {
     const DIG_FLAGS = [
       ['bc','Claim items'], ['bf','Forbid items'], ['bm','Melt items'], ['bM','Unmelt items'], ['bd','Dump items'], ['bD','Undump items'], ['bh','Hide items'], ['bH','Unhide items'], ['oh','High traffic'], ['on','Normal traffic'], ['ol','Low traffic'], ['or','Restricted traffic']
     ];
+    // [token, label] pairs like every other palette (matches the Build tab's
+    // "Constructed Tracks" group), so the carved-track buttons read in plain
+    // English instead of showing only the raw token.
+    // The trackramp* aliases are identical carve designations to the plain track*
+    // pieces (spec sec 8), used when carving a track over a natural ramp for clarity.
+    // They render with the double-line ramp glyphs (displayTokenForGrid) and match the
+    // Build tab's Constructed Tracks group, so the Dig palette is complete for both.
     const DIG_TRACKS = [
-      'trackN','trackS','trackE','trackW','trackNS','trackEW','trackNE','trackNW','trackSE','trackSW','trackNSE','trackNSW','trackNEW','trackSEW','trackNSEW'
+      ['trackN','track N'], ['trackS','track S'], ['trackE','track E'], ['trackW','track W'],
+      ['trackNS','track NS'], ['trackEW','track EW'], ['trackNE','track NE'], ['trackNW','track NW'],
+      ['trackSE','track SE'], ['trackSW','track SW'], ['trackNSE','track NSE'], ['trackNSW','track NSW'],
+      ['trackNEW','track NEW'], ['trackSEW','track SEW'], ['trackNSEW','track NSEW'],
+      ['trackrampN','track ramp N'], ['trackrampS','track ramp S'], ['trackrampE','track ramp E'], ['trackrampW','track ramp W'],
+      ['trackrampNS','track ramp NS'], ['trackrampEW','track ramp EW'], ['trackrampNE','track ramp NE'], ['trackrampNW','track ramp NW'],
+      ['trackrampSE','track ramp SE'], ['trackrampSW','track ramp SW'], ['trackrampNSE','track ramp NSE'], ['trackrampNSW','track ramp NSW'],
+      ['trackrampNEW','track ramp NEW'], ['trackrampSEW','track ramp SEW'], ['trackrampNSEW','track ramp NSEW']
     ];
 
     const PLACE_STOCKPILES = [
@@ -6853,14 +7847,12 @@ const state = {
       ]}
     ];
 
-    function buildToolButton(val, label) {
-      const d = document.createElement('button');
-      d.type = 'button';
-      d.className = 'tool';
-      d.setAttribute('data-tool', val);
-      d.setAttribute('aria-label', (label||val||'eraser'));
-      d.innerHTML = `${label||val}<small>${val}</small>`;
-      return d;
+    // Hover tooltip pairing a palette button's plain-English name with the exact
+    // Quickfort token it emits, so the token behind a friendly label is learnable
+    // (the token pill is tiny, and track buttons show only a glyph, not the token).
+    function toolButtonTitle(val, label) {
+      if (!val) return 'Eraser';
+      return (label && label !== val) ? label + ' (' + val + ')' : val;
     }
 
     function buildColoredToolButton(val, label, color) {
@@ -6869,6 +7861,7 @@ const state = {
       d.className = 'tool';
       d.setAttribute('data-tool', val);
       d.setAttribute('aria-label', (label||val||'eraser'));
+      d.title = toolButtonTitle(val, label);
       const title = document.createElement('div');
       title.textContent = label || val;
       const small = document.createElement('small');
@@ -6887,6 +7880,7 @@ const state = {
       d.className = 'tool';
       d.setAttribute('data-tool', val);
       d.setAttribute('aria-label', (label||val));
+      d.title = toolButtonTitle(val, label);
       const title = document.createElement('div');
       title.textContent = label || val;
       const small = document.createElement('small');
@@ -6921,10 +7915,10 @@ const state = {
       });
       // Dig: tracks
       const digTracks = document.getElementById('dig-tracks');
-      DIG_TRACKS.forEach(v => {
+      DIG_TRACKS.forEach(([v,l]) => {
         const base = stripPropsAndCfg(v);
         const col = getDigColorForToken(base);
-        digTracks.appendChild(buildColoredToolButton(v, v, col));
+        digTracks.appendChild(buildColoredToolButton(v, l, col));
       });
 
       // Place: stockpiles
@@ -7030,20 +8024,33 @@ const state = {
       if (document.getElementById('place-autotrade')?.checked) props.push('autotrade=true');
       if (document.getElementById('place-autodump')?.checked) props.push('autodump=true');
       if (document.getElementById('place-autotrain')?.checked) props.push('autotrain=true');
+      if (document.getElementById('place-autoforbid')?.checked) props.push('autoforbid=true');
+      if (document.getElementById('place-autoclaim')?.checked) props.push('autoclaim=true');
       const extra = document.getElementById('place-props')?.value?.trim();
       if (extra) props.push(extra);
       if (!props.length) return '';
       return `{${props.join(' ')}}`;
     }
 
-    function buildPlaceConfigSuffix() {
-      const cfg = document.getElementById('place-config')?.value?.trim();
+    // Shared by #place stockpiles and #build track stops (spec: both take a stockpile-style
+    // :config segment). Reads the named text input and returns the `:config` suffix, which sits
+    // OUTSIDE the {props} braces (a config can never be emitted through the extra-props field).
+    function buildConfigSuffix(inputId) {
+      let cfg = document.getElementById(inputId)?.value?.trim();
       if (!cfg) return '';
-      return `:=${cfg}`;
+      // A stockpile config segment leads with an op: = (set, must come first), - (disable),
+      // or + (enable), and segments can chain (:-cat_weapons/mats/,other/+steelweapons).
+      // A bare preset defaults to = (set). Strip a leading colon in case the user typed ":=seeds".
+      if (cfg[0] === ':') cfg = cfg.slice(1).trim();
+      if (!cfg) return '';
+      const op = /^[=+-]/.test(cfg) ? '' : '=';
+      return `:${op}${cfg}`;
     }
 
-    function buildPlaceExtentSuffix() {
-      const raw = document.getElementById('place-extent')?.value?.trim();
+    // Shared (WxH) expansion-extent suffix builder, used by Place/Zone/Burrow: stamps a
+    // single painted cell with a token that Quickfort expands into a WxH block on import.
+    function buildExtentSuffix(inputId) {
+      const raw = document.getElementById(inputId)?.value?.trim();
       if (!raw) return '';
       const m = raw.match(/^\(?\s*(\d+)\s*x\s*(\d+)\s*\)?$/i);
       if (!m) return '';
@@ -7051,6 +8058,12 @@ const state = {
       const h = m[2];
       return `(${w}x${h})`;
     }
+
+    // Location supply-target properties (spec sec 11): each emits desired_X=<n> for the zone's
+    // attached location (tavern/temple/hospital/library). Single source for the desired_* inputs'
+    // emit / reset / reverse-parse / wiring, keyed to the zone-desired-<item> input ids.
+    const ZONE_DESIRED_PROPS = ['desired_goblets','desired_instruments','desired_splints','desired_thread','desired_cloth','desired_crutches','desired_powder','desired_buckets','desired_soap','desired_paper'];
+    const zoneDesiredInputId = key => 'zone-' + key.replace(/_/g, '-');
 
     function buildZoneProps() {
       const props = [];
@@ -7064,13 +8077,26 @@ const state = {
       }
       const prof = document.getElementById('zone-profession')?.value?.trim();
       if (prof) props.push(`profession=${prof}`);
+      const allow = document.getElementById('zone-allow')?.value;
+      if (allow) props.push(`allow=${allow}`);
       const assigned = document.getElementById('zone-assigned-unit')?.value?.trim();
       if (assigned) props.push(`assigned_unit=${JSON.stringify(assigned)}`);
       const shootFrom = document.getElementById('zone-shoot-from')?.value;
       if (shootFrom) props.push(`shoot_from=${shootFrom}`);
       if (document.getElementById('zone-pond')?.checked) props.push('pond=true');
       if (document.getElementById('zone-pets')?.checked) props.push('pets=true');
+      // A tomb allows citizens by default; emit citizens=false only to disallow them.
+      if (document.getElementById('zone-no-citizens')?.checked) props.push('citizens=false');
+      // Gather zones pick trees/shrubs/fallen fruit by default; emit =false only to disable one.
+      if (document.getElementById('zone-no-pick-trees')?.checked) props.push('pick_trees=false');
+      if (document.getElementById('zone-no-pick-shrubs')?.checked) props.push('pick_shrubs=false');
+      if (document.getElementById('zone-no-gather-fallen')?.checked) props.push('gather_fallen=false');
       if (document.getElementById('zone-deactivate')?.checked) props.push('active=false');
+      // Location supply targets (spec sec 11): desired_X=<n> for the attached location.
+      ZONE_DESIRED_PROPS.forEach(key => {
+        const v = document.getElementById(zoneDesiredInputId(key))?.value?.trim();
+        if (v) props.push(`${key}=${v}`);
+      });
       const extra = document.getElementById('zone-props')?.value?.trim();
       if (extra) props.push(extra);
       if (!props.length) return '';
@@ -7082,8 +8108,8 @@ const state = {
       const name = document.getElementById('burrow-name')?.value?.trim();
       if (name) props.push(`name=${JSON.stringify(name)}`);
       if (document.getElementById('burrow-create')?.checked) props.push('create=true');
-      const civalert = document.getElementById('burrow-civalert')?.value?.trim();
-      if (civalert) props.push(`civalert=${JSON.stringify(civalert)}`);
+      // civalert is a boolean flag (registers the burrow with gui/civ-alert), not a named value.
+      if (document.getElementById('burrow-civalert')?.checked) props.push('civalert=true');
       const extra = document.getElementById('burrow-props')?.value?.trim();
       if (extra) props.push(extra);
       if (!props.length) return '';
@@ -7092,18 +8118,39 @@ const state = {
 
     // Build the {properties} suffix for a #build cell. name + do_now apply to every
     // building; max_general_orders / take_from / give_to are workshop/furnace profile
-    // props (reference doc sec 10). Returns '' when nothing is set.
+    // props; route names a track-stop hauling route; speed sets a roller's push speed
+    // (reference doc sec 10). Returns '' when nothing is set.
     function buildBuildProps() {
       const props = [];
       const name = document.getElementById('build-name')?.value?.trim();
       if (name) props.push(`name=${JSON.stringify(name)}`);
       if (document.getElementById('build-do-now')?.checked) props.push('do_now=true');
+      // seasonal_fertilize applies to farm plots; default off, so unchecked emits nothing.
+      if (document.getElementById('build-seasonal-fertilize')?.checked) props.push('seasonal_fertilize=true');
       const takeFrom = document.getElementById('build-take-from')?.value?.trim();
       if (takeFrom) props.push(`take_from=${JSON.stringify(takeFrom)}`);
       const giveTo = document.getElementById('build-give-to')?.value?.trim();
       if (giveTo) props.push(`give_to=${JSON.stringify(giveTo)}`);
+      const route = document.getElementById('build-route')?.value?.trim();
+      if (route) props.push(`route=${JSON.stringify(route)}`);
       const maxOrders = document.getElementById('build-max-orders')?.value;
       if (maxOrders !== '' && maxOrders != null) props.push(`max_general_orders=${Number(maxOrders)}`);
+      // Skill range: emit the value verbatim (a numeric level like 0-15, or a level name).
+      // Quote only if it carries whitespace (e.g. "High Master") so the token stays valid.
+      const emitSkill = v => /\s/.test(v) ? JSON.stringify(v) : v;
+      const minSkill = document.getElementById('build-min-skill')?.value?.trim();
+      if (minSkill) props.push(`min_skill=${emitSkill(minSkill)}`);
+      const maxSkill = document.getElementById('build-max-skill')?.value?.trim();
+      if (maxSkill) props.push(`max_skill=${emitSkill(maxSkill)}`);
+      // Labor / labor_mask (spec sec 10): a labor name or group; quote only when it carries
+      // whitespace so a multi-word labor stays a single valid token.
+      const labor = document.getElementById('build-labor')?.value?.trim();
+      if (labor) props.push(`labor=${emitSkill(labor)}`);
+      const laborMask = document.getElementById('build-labor-mask')?.value?.trim();
+      if (laborMask) props.push(`labor_mask=${emitSkill(laborMask)}`);
+      // Roller speed (spec sec 10): a discrete numeric value (10000..50000); blank = game default.
+      const rollerSpeed = document.getElementById('build-roller-speed')?.value;
+      if (rollerSpeed) props.push(`speed=${rollerSpeed}`);
       const extra = document.getElementById('build-props')?.value?.trim();
       if (extra) props.push(extra);
       if (!props.length) return '';
@@ -7153,8 +8200,8 @@ const state = {
         return true;
       }
       if (tabId === 'place') {
-        // Grammar: TYPES[/LABEL][{PROPS}][:=CONFIG][(WxH)]
-        const m = /^([a-zA-Z]+)(?:\/([A-Za-z0-9_]+))?(?:\{([^}]*)\})?(?::=([^(]*))?(?:\((\d+)x(\d+)\))?$/.exec(token);
+        // Grammar: TYPES[/LABEL][{PROPS}][:CONFIG][(WxH)] where CONFIG leads with an op (=/-/+).
+        const m = /^([a-zA-Z]+)(?:\/([A-Za-z0-9_]+))?(?:\{([^}]*)\})?(?::([^(]*))?(?:\((\d+)x(\d+)\))?$/.exec(token);
         if (!m) return false;
         const [, types, label='', propsStr='', config='', pw='', ph=''] = m;
         state.selectedToolByTab[tabId] = types;
@@ -7165,7 +8212,9 @@ const state = {
         setC('place-links-only', false);  setC('place-quantum', false);
         setC('place-automelt', false);    setC('place-autotrade', false);
         setC('place-autodump', false);    setC('place-autotrain', false);
-        setV('place-config', config.trim());
+        setC('place-autoforbid', false);  setC('place-autoclaim', false);
+        // Drop the default = (set) op so a bare preset shows clean; keep -/+ ops verbatim.
+        setV('place-config', config.trim().replace(/^=/, ''));
         setV('place-extent', pw && ph ? `(${pw}x${ph})` : '');
         setV('place-props', '');
         const unknown = [];
@@ -7183,23 +8232,35 @@ const state = {
           autotrade:    v => setC('place-autotrade', v === 'true'),
           autodump:     v => setC('place-autodump', v === 'true'),
           autotrain:    v => setC('place-autotrain', v === 'true'),
+          autoforbid:   v => setC('place-autoforbid', v === 'true'),
+          autoclaim:    v => setC('place-autoclaim', v === 'true'),
         }, unknown);
         if (unknown.length) setV('place-props', unknown.join(' '));
         return true;
       }
       if (tabId === 'zone') {
-        // Grammar: TYPES[/LABEL][{PROPS}]
-        const m = /^([a-zA-Z]+)(?:\/([A-Za-z0-9_]+))?(?:\{([^}]*)\})?$/.exec(token);
+        // Grammar: TYPE[/LABEL][{PROPS}] (OVERLAP)* [(WxH)], where each OVERLAP is another
+        // full zone token type[/label]{props} sharing the footprint (spec sec 11). The trailing
+        // overlap groups are captured raw into the overlay field so a stacked cell round-trips.
+        // Every #zone type is a SINGLE letter (matching splitStackedZoneTypes), so the type groups
+        // are one letter each, NOT greedy [a-zA-Z]+. A greedy first group swallowed a braceless
+        // base + overlap (base `n` + overlay `t{active=false}` composes to `nt{active=false}`) as
+        // one fake type "nt" with the overlay's props, so Alt+click lost the stack the grid shows.
+        const m = /^([a-zA-Z])(?:\/([A-Za-z0-9_]+))?(?:\{([^}]*)\})?((?:[a-zA-Z](?:\/[A-Za-z0-9_]+)?(?:\{[^}]*\})?)*)(?:\((\d+)x(\d+)\))?$/.exec(token);
         if (!m) return false;
-        const [, types, label='', propsStr=''] = m;
+        const [, types, label='', propsStr='', overlay='', ew='', eh=''] = m;
         state.selectedToolByTab[tabId] = types;
         setV('zone-label', label);
         setV('zone-name', '');  setV('zone-location', '');  setV('zone-location-name', '');
-        setV('zone-profession', '');  setV('zone-assigned-unit', '');  setV('zone-shoot-from', '');
-        setC('zone-pond', false);  setC('zone-pets', false);  setC('zone-deactivate', false);
+        setV('zone-profession', '');  setV('zone-allow', '');  setV('zone-assigned-unit', '');  setV('zone-shoot-from', '');
+        setC('zone-pond', false);  setC('zone-pets', false);  setC('zone-no-citizens', false);  setC('zone-deactivate', false);
+        setC('zone-no-pick-trees', false);  setC('zone-no-pick-shrubs', false);  setC('zone-no-gather-fallen', false);
+        ZONE_DESIRED_PROPS.forEach(key => setV(zoneDesiredInputId(key), ''));
+        setV('zone-extent', ew && eh ? `(${ew}x${eh})` : '');
+        setV('zone-overlay', overlay);
         setV('zone-props', '');
         const unknown = [];
-        parseProps(propsStr, {
+        const zoneHandlers = {
           name:          v => setV('zone-name', v),
           location:      v => {
             const sl = v.indexOf('/');
@@ -7207,50 +8268,75 @@ const state = {
             if (sl !== -1) setV('zone-location-name', v.slice(sl + 1));
           },
           profession:    v => setV('zone-profession', v),
+          allow:         v => setV('zone-allow', v),
           assigned_unit: v => setV('zone-assigned-unit', v),
           shoot_from:    v => setV('zone-shoot-from', v),
           pond:          v => setC('zone-pond', v === 'true'),
           pets:          v => setC('zone-pets', v === 'true'),
+          citizens:      v => setC('zone-no-citizens', v === 'false'),
+          pick_trees:    v => setC('zone-no-pick-trees', v === 'false'),
+          pick_shrubs:   v => setC('zone-no-pick-shrubs', v === 'false'),
+          gather_fallen: v => setC('zone-no-gather-fallen', v === 'false'),
           active:        v => setC('zone-deactivate', v === 'false'),
-        }, unknown);
+        };
+        // Reverse-parse each desired_* stock target into its structured input (else it would
+        // fall through to the unknown bucket and leak back into the extra-props field).
+        ZONE_DESIRED_PROPS.forEach(key => { zoneHandlers[key] = v => setV(zoneDesiredInputId(key), v); });
+        parseProps(propsStr, zoneHandlers, unknown);
         if (unknown.length) setV('zone-props', unknown.join(' '));
         return true;
       }
       if (tabId === 'build') {
-        // Grammar: BASE[{PROPS}]. BASE is the building symbol (may contain ~, digits,
-        // uppercase: wm, Cw, ~b, Msu, gw). Reject tokens carrying their own label /
-        // :config / (expansion), the build composer does not decorate those either, so
-        // keep them verbatim (the build panel has no field to round-trip them).
-        const m = /^([^{}()/:\s]+)(?:\{([^}]*)\})?$/.exec(token);
+        // Grammar: BASE[{PROPS}][:CONFIG]. BASE is the building symbol (may contain ~, digits,
+        // uppercase: wm, Cw, ~b, Msu, gw). CONFIG is the track-stop stockpile filter (leads with
+        // an op =/-/+). A token carrying its own label / (expansion) is kept verbatim (the build
+        // panel has no field to round-trip those).
+        const m = /^([^{}()/:\s]+)(?:\{([^}]*)\})?(?::([^()]*))?$/.exec(token);
         if (!m) return false;
-        const [, base, propsStr=''] = m;
+        const [, base, propsStr='', config=''] = m;
         state.selectedToolByTab[tabId] = base;
         setV('build-name', '');  setV('build-take-from', '');  setV('build-give-to', '');
+        setV('build-route', '');  setV('build-config', config.trim().replace(/^=/, ''));
         setV('build-max-orders', '');  setC('build-do-now', false);  setV('build-props', '');
+        setV('build-min-skill', '');  setV('build-max-skill', '');
+        setV('build-labor', '');  setV('build-labor-mask', '');
+        setV('build-roller-speed', '');
+        setC('build-seasonal-fertilize', false);
         const unknown = [];
         parseProps(propsStr, {
           name:               v => setV('build-name', v),
           do_now:             v => setC('build-do-now', v === 'true'),
+          seasonal_fertilize: v => setC('build-seasonal-fertilize', v === 'true'),
           take_from:          v => setV('build-take-from', v),
           give_to:            v => setV('build-give-to', v),
+          route:              v => setV('build-route', v),
           max_general_orders: v => setV('build-max-orders', v),
+          min_skill:          v => setV('build-min-skill', v),
+          max_skill:          v => setV('build-max-skill', v),
+          labor:              v => setV('build-labor', v),
+          labor_mask:         v => setV('build-labor-mask', v),
+          // A <select> can only hold one of its options; a non-standard speed stays in
+          // extra-props so it round-trips instead of being silently dropped by the select.
+          speed:              v => ['50000','40000','30000','20000','10000'].includes(v)
+                                     ? setV('build-roller-speed', v) : unknown.push(`speed=${v}`),
         }, unknown);
         if (unknown.length) setV('build-props', unknown.join(' '));
         return true;
       }
       if (tabId === 'burrow') {
-        // Grammar: BASE[{PROPS}].
-        const m = /^([^{}()/:\s]+)(?:\{([^}]*)\})?$/.exec(token);
+        // Grammar: BASE[{PROPS}][(WxH)].
+        const m = /^([^{}()/:\s]+)(?:\{([^}]*)\})?(?:\((\d+)x(\d+)\))?$/.exec(token);
         if (!m) return false;
-        const [, base, propsStr=''] = m;
+        const [, base, propsStr='', ew='', eh=''] = m;
         state.selectedToolByTab[tabId] = base;
-        setV('burrow-name', '');  setC('burrow-create', false);  setV('burrow-civalert', '');
+        setV('burrow-name', '');  setC('burrow-create', false);  setC('burrow-civalert', false);
+        setV('burrow-extent', ew && eh ? `(${ew}x${eh})` : '');
         setV('burrow-props', '');
         const unknown = [];
         parseProps(propsStr, {
           name:     v => setV('burrow-name', v),
           create:   v => setC('burrow-create', v === 'true'),
-          civalert: v => setV('burrow-civalert', v),
+          civalert: v => setC('burrow-civalert', v === 'true'),
         }, unknown);
         if (unknown.length) setV('burrow-props', unknown.join(' '));
         return true;
@@ -7280,8 +8366,8 @@ const state = {
       if (scopeId === 'place') {
         const label = buildLabelSuffix('place-label');
         const props = buildPlaceProps();
-        const cfg = buildPlaceConfigSuffix();
-        const ext = buildPlaceExtentSuffix();
+        const cfg = buildConfigSuffix('place-config');
+        const ext = buildExtentSuffix('place-extent');
         if (label) token += label; // types/label, before {properties}
         if (props) token += props;
         if (cfg) token += cfg;
@@ -7291,20 +8377,32 @@ const state = {
       if (scopeId === 'zone') {
         const label = buildLabelSuffix('zone-label');
         const props = buildZoneProps();
+        // Overlapping zones: additional full zone tokens (t{active=false}m{...}) that share this
+        // cell's footprint (spec sec 11). Appended verbatim after this zone and before the shared
+        // extent. Empty = single-zone token, byte-unchanged.
+        const overlay = (document.getElementById('zone-overlay')?.value || '').trim();
+        const ext = buildExtentSuffix('zone-extent');
         if (label) token += label; // type/label, before {properties}
         if (props) token += props;
+        if (overlay) token += overlay; // extra overlapping zones, before the shared extent
+        if (ext) token += ext; // append extent at the very end
         return token;
       }
       if (scopeId === 'burrow') {
         const props = buildBurrowProps();
+        const ext = buildExtentSuffix('burrow-extent');
         if (props) token += props;
+        if (ext) token += ext; // append extent at the very end
         return token;
       }
       if (scopeId === 'build') {
         // Only decorate a clean base symbol. A hand-typed custom token that already
         // carries its own {props}/(expansion)/:config/label is the user's explicit spec.
+        if (/[{(:\/]/.test(token)) return token;
         const props = buildBuildProps();
-        if (props && !/[{(:\/]/.test(token)) token += props;
+        if (props) token += props;
+        const cfg = buildConfigSuffix('build-config'); // track-stop :config, after {props}
+        if (cfg) token += cfg;
         return token;
       }
       return token;
@@ -7317,20 +8415,45 @@ const state = {
       });
     }
 
+    // All property-panel option inputs, grouped by tab prefix (place-/zone-/burrow-/build-).
+    // Single source of truth for both the live-preview wiring and clearToolOptions, so the two
+    // can never drift. Tab prefixes are distinct and none is a prefix of another, so filtering
+    // by `tabId + '-'` picks exactly one panel's fields.
+    const PROP_INPUT_IDS = [
+      'place-name','place-label','place-take-from','place-give-to','place-barrels','place-bins','place-wheelbarrows','place-containers',
+      'place-links-only','place-quantum','place-automelt','place-autotrade','place-autodump','place-autotrain','place-autoforbid','place-autoclaim','place-config','place-extent','place-props',
+      'zone-name','zone-label','zone-location','zone-location-name','zone-profession','zone-allow','zone-assigned-unit','zone-shoot-from','zone-pond','zone-pets','zone-no-citizens','zone-no-pick-trees','zone-no-pick-shrubs','zone-no-gather-fallen','zone-deactivate','zone-overlay','zone-extent','zone-props',
+      ...ZONE_DESIRED_PROPS.map(zoneDesiredInputId),
+      'burrow-name','burrow-create','burrow-civalert','burrow-extent','burrow-props',
+      'build-name','build-do-now','build-seasonal-fertilize','build-take-from','build-give-to','build-route','build-config','build-max-orders','build-min-skill','build-max-skill','build-labor','build-labor-mask','build-roller-speed','build-props'
+    ];
+
+    // Reset every option field of one property panel back to empty, so a filled panel can be
+    // cleared for a fresh plain token without wiping each field by hand. Leaves the selected
+    // tool TYPE alone (only the {properties} inputs are cleared). A tabId with no panel (dig)
+    // matches nothing and is a harmless no-op.
+    function clearToolOptions(tabId) {
+      const prefix = tabId + '-';
+      PROP_INPUT_IDS.filter(id => id.startsWith(prefix)).forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (el.type === 'checkbox') el.checked = false;
+        else el.value = '';
+      });
+      updateToolUI();
+    }
+
     // Wire property inputs to refresh preview
     function wirePropInputs() {
-      const ids = [
-        'place-name','place-label','place-take-from','place-give-to','place-barrels','place-bins','place-wheelbarrows','place-containers',
-        'place-links-only','place-quantum','place-automelt','place-autotrade','place-autodump','place-autotrain','place-config','place-extent','place-props',
-        'zone-name','zone-label','zone-location','zone-location-name','zone-profession','zone-assigned-unit','zone-shoot-from','zone-pond','zone-pets','zone-deactivate','zone-props',
-        'burrow-name','burrow-create','burrow-civalert','burrow-props',
-        'build-name','build-do-now','build-take-from','build-give-to','build-max-orders','build-props'
-      ];
-      ids.forEach(id => {
+      PROP_INPUT_IDS.forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
         const ev = (el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'number')) ? 'input' : 'change';
         el.addEventListener(ev, updateToolUI);
+      });
+      // Clear-options buttons at the foot of each property panel reset that panel's fields.
+      document.querySelectorAll('[data-clear-opts]').forEach(btn => {
+        btn.addEventListener('click', () => clearToolOptions(btn.getAttribute('data-clear-opts')));
       });
     }
 
@@ -7538,7 +8661,19 @@ const state = {
       // Persist work continuously: on unload (reload / tab-close) and on a
       // periodic backstop (covers a browser crash). writeAutosave is guarded
       // and try/catch-wrapped, so it never interrupts editing.
-      window.addEventListener('beforeunload', writeAutosave);
+      // When autosave consent is OFF (the default), writeAutosave writes
+      // nothing, so an accidental reload / tab-close would silently discard all
+      // painted work. Trigger the browser's native "unsaved changes" prompt in
+      // exactly that case (nothing persisted AND some blueprint has content),
+      // giving the user a chance to cancel and download a project (.json) first.
+      window.addEventListener('beforeunload', (e) => {
+        writeAutosave();
+        const notPersisted = window.qfStorage && !window.qfStorage.isOn('autosave');
+        if (notPersisted) {
+          saveActiveIntoWorkbook(); // fold the active blueprint's live edits in before scanning
+          if (anyBlueprintHasContent()) { e.preventDefault(); e.returnValue = ''; }
+        }
+      });
       setInterval(writeAutosave, 30000);
       if (restoredSession) markAutosaved();
       // Initialize z-label and ensure first render uses active z
@@ -7695,20 +8830,26 @@ const state = {
         { label: 'Export: preview CSV (current tab)', run: () => openCsvPreview(false) },
         { label: 'Export: preview All (CSV, every tab + notes/meta)', run: () => openCsvPreview(true) },
         { label: 'Tools: tile counts (current tab) (T)', run: () => openCountsModal() },
+        { label: 'Tools: clear the current options panel', run: () => clearToolOptions(state.activeTab) },
         { label: 'Edit: find & replace tokens (current tab & Z)', run: () => openReplaceModal() },
         { label: 'Session: clear saved session (start fresh)', run: () => clearAutosave() },
         { label: 'Export: copy CSV to clipboard', run: click('copycsv') },
         { label: 'Export: current tab as .xlsx', run: click('downloadxlsx') },
         { label: 'Export: current tab + Z as PNG picture', run: () => exportPNG() },
+        { label: 'Export: copy current tab + Z PNG picture to clipboard', run: () => copyActiveTabPNG() },
         { label: 'Export: all tabs (CSV)', run: click('exportall') },
         { label: 'Export: copy All (CSV) to clipboard', run: click('copyallcsv') },
         { label: 'Export: all tabs .xlsx', run: click('exportallxlsx') },
         { label: 'Export: whole workbook .xlsx', run: click('exportworkbook') },
+        { label: 'Export: whole workbook (CSV, every blueprint stacked)', run: click('exportworkbookcsv') },
         { label: 'Export: download workbook project (.json) (Ctrl/Cmd+S)', run: () => downloadWorkbookJSON() },
         { label: 'Import: load CSV', run: click('loadcsv') },
         { label: 'Import: paste CSV from clipboard', run: click('pastecsv') },
         { label: 'Import: load workbook (.xlsx)', run: click('loadworkbook') },
         { label: 'Import: load workbook project (.json)', run: click('loadproject') },
+        { label: 'Import: Bedroom example (dig + build)', run: () => loadExampleBlueprint('bedroom') },
+        { label: 'Import: Stockpiles example (place)', run: () => loadExampleBlueprint('stockpiles') },
+        { label: 'Import: Dining hall example (build + zone)', run: () => loadExampleBlueprint('dining') },
         { label: 'Z-level: add', run: click('z-add') },
         { label: 'Z-level: duplicate current', run: click('z-dup') },
         { label: 'Z-level: move up one slot', run: click('z-moveup') },
@@ -7753,11 +8894,16 @@ const state = {
         { label: 'Selection: rotate 90° counter-clockwise (Shift+O)', run: () => transformSelectionOrBuffer('rotateCCW') },
         { label: 'Selection: mirror X (flip vertical)', run: click('mirror-x-selection') },
         { label: 'Selection: mirror Y (flip horizontal)', run: click('mirror-y-selection') },
+        { label: 'Selection: new blueprint from selection', run: () => newBlueprintFromSelection() },
         { label: 'Grid: insert blank rows above selection', run: () => insertRowsAtSelection() },
         { label: 'Grid: delete selected rows', run: () => deleteRowsAtSelection() },
         { label: 'Grid: insert blank columns left of selection', run: () => insertColsAtSelection() },
         { label: 'Grid: delete selected columns', run: () => deleteColsAtSelection() },
         { label: 'Grid: trim empty borders (crop to content)', run: () => trimToContent() },
+        { label: 'Grid: flip whole blueprint horizontally (left-right)', run: () => flipWholeBlueprint('h') },
+        { label: 'Grid: flip whole blueprint vertically (top-bottom)', run: () => flipWholeBlueprint('v') },
+        { label: 'Grid: rotate whole blueprint 90 clockwise', run: () => rotateWholeBlueprint('cw') },
+        { label: 'Grid: rotate whole blueprint 90 counter-clockwise', run: () => rotateWholeBlueprint('ccw') },
         { label: 'Selection: toggle skip blanks', run: click('paste-skip-blanks') },
         { label: 'Blueprint: stamp another into this one', run: click('paste-bp-btn') },
       ];
