@@ -67,16 +67,18 @@ function expose(win) {
   // bindings (state, Tabs) plus all the top-level function declarations.
   const names = [
     'state','Tabs','makeMatrix','ensureGrids','ensureHistory','getMatrix','setMatrix',
-    'setCellValue','setGridSize','tabToMultiZCSV','tabToMultiZCSVTrimmed','matrixToCSV',
+    'setCellValue','setGridSize','tabToMultiZCSV','matrixToCSV',
     'matrixRowsToCSVLines','rotateMatrixCW','mirrorMatrixX','mirrorMatrixY','floodFill',
     'reaimTrackToken','reaimBuildingToken','applyMatTransform',
     'collapseRectangles','containerShorthand','bareDigPriorities','additiveTracks',
     'normalizeImportToken','importSectionToMultiZ','splitStackedZoneTypes',
     'buildModelineText','parseModelineMarkers',
-    'parseCSV','csvQuoteLine','firstCSVCell','detectHeaderLine','splitSheetsFromText','headerToTabId',
+    'parseCSV','csvQuoteLine','firstCSVCell','detectHeaderLine','splitSheetsFromText','splitLogicalRows','headerToTabId',
+    'groupSheetsIntoBlueprints','sectionMatrixIsBlank',
     'matrixContentBounds','uniformExportCrop','cropMatrixToBounds',
     'rectCells','lineCells','circleCells','bresenhamLine','pasteBufferAt','copySelectedArea',
-    'historyBegin','historyCommit','historyUndo','historyRedo'
+    'historyBegin','historyCommit','historyUndo','historyRedo','applyTool','applyToolBatch',
+    'mapZ','getHistoryBucket','populatePanelFromToken','buildZoneProps','safeSheetName'
   ];
   const s = win.document.createElement('script');
   s.textContent = 'window.__qf = {' + names.map(n => `${n}:typeof ${n}!=="undefined"?${n}:undefined`).join(',') + '};';
@@ -326,6 +328,58 @@ function defineTests(qf, win) {
     eq(s[0].modeline.startX, '3');
     eq(s[0].modeline.startY, '2');
   });
+  test('splitLogicalRows matches plain split("\\n") when no field spans a newline', () => {
+    deepEq(qf.splitLogicalRows('a,b\nc,d'), ['a,b', 'c,d']);
+    deepEq(qf.splitLogicalRows('a,b\n'), ['a,b', '']); // trailing separator still yields a final blank row
+    deepEq(qf.splitLogicalRows(''), ['']);
+  });
+  test('splitLogicalRows keeps a quoted embedded newline inside one logical row (spec: message() "supports embedded newlines, quote the cell")', () => {
+    // Two physical lines, one logical row: the newline lives inside the quotes.
+    const text = '#dig message("Hello\nWorld")\nd,d';
+    const rows = qf.splitLogicalRows(text);
+    eq(rows.length, 2); // NOT 3: a naive split('\n') would tear the quoted cell into two rows
+    eq(rows[0], '#dig message("Hello\nWorld")');
+    eq(rows[1], 'd,d');
+  });
+  test('splitSheetsFromText imports a modeline message() with a real embedded newline without truncating it or spawning a bogus grid row', () => {
+    const text = '#dig message("Hello\nWorld")\nd,d';
+    const sheets = qf.splitSheetsFromText(text);
+    eq(sheets.length, 1);
+    eq(sheets[0].header, '#dig');
+    eq(sheets[0].modeline.message, 'Hello\nWorld'); // full text kept, not truncated at the embedded newline
+    deepEq(sheets[0].matrix, [['d', 'd']]); // the grid body is NOT polluted with a stray '"World")' row
+  });
+  test('sectionMatrixIsBlank recognizes an all-empty matrix vs one with real content', () => {
+    eq(qf.sectionMatrixIsBlank([['']]), true);
+    eq(qf.sectionMatrixIsBlank([['', ''], ['', '']]), true);
+    eq(qf.sectionMatrixIsBlank([]), true);
+    eq(qf.sectionMatrixIsBlank([['', 'd']]), false);
+  });
+  test('groupSheetsIntoBlueprints gives a wholly-empty blueprint placeholder (bare header, no rows) its own group instead of merging it into a neighbour (shipped bug)', () => {
+    // Mirrors blueprintSnapshotToCSV's export of an empty blueprint: a bare '#dig' header
+    // with no #0N/rows, sandwiched between two real, disjoint-tab blueprints. Before the
+    // fix, the empty marker's 'dig' tab wasn't yet "used" by the preceding #build section,
+    // so it silently merged into that group instead of starting its own, and the workbook
+    // lost a blueprint on reimport.
+    const sheets = [
+      { header: '#build', matrix: [['b', '']] },
+      { header: '#dig', matrix: [['']] },
+      { header: '#dig', matrix: [['#00'], ['d', 'd']] },
+    ];
+    const groups = qf.groupSheetsIntoBlueprints(sheets);
+    eq(groups.length, 3);
+    eq(groups[0].length, 1); eq(groups[0][0].header, '#build');
+    eq(groups[1].length, 1); eq(groups[1][0].header, '#dig');
+    eq(groups[2].length, 1); eq(groups[2][0].header, '#dig');
+  });
+  test('groupSheetsIntoBlueprints still merges a real repeated tab into a new group (unchanged)', () => {
+    const sheets = [
+      { header: '#dig', matrix: [['d', 'd']] },
+      { header: '#dig', matrix: [['d', 'd']] },
+    ];
+    const groups = qf.groupSheetsIntoBlueprints(sheets);
+    eq(groups.length, 2);
+  });
 
   // The export-side normalisation transforms (container shorthand, dig-priority
   // shorthand, rectangle collapse) and their import-side inverse shipped across many
@@ -356,6 +410,26 @@ function defineTests(qf, win) {
   });
   test('collapseRectangles leaves a lone cell alone (no 1x1 noise)', () => {
     deepEq(qf.collapseRectangles([['d','']]), [['d','']]);
+  });
+
+  // safeSheetName dedupes xlsx sheet names. Excel treats sheet names as unique
+  // CASE-INSENSITIVELY, so "Farm"/"farm" must be disambiguated or the workbook opens corrupt.
+  group('Export: xlsx sheet-name dedupe');
+  test('safeSheetName disambiguates a case-insensitive collision', () => {
+    const used = new Set();
+    eq(qf.safeSheetName('Farm', used), 'Farm');   // first keeps its casing
+    eq(qf.safeSheetName('farm', used), 'farm_2');  // case-only dup gets a suffix
+    eq(qf.safeSheetName('FARM', used), 'FARM_3');  // and the next, still case-insensitively unique
+  });
+  test('safeSheetName leaves genuinely-distinct names byte-unchanged', () => {
+    const used = new Set();
+    eq(qf.safeSheetName('Bedrooms', used), 'Bedrooms');
+    eq(qf.safeSheetName('Workshops', used), 'Workshops');
+  });
+  test('safeSheetName sanitizes illegal chars and clamps to 31', () => {
+    const used = new Set();
+    eq(qf.safeSheetName('a/b:c*d', used), 'a_b_c_d');
+    eq(qf.safeSheetName('x'.repeat(40), used), 'x'.repeat(31));
   });
 
   // additiveTracks collapses a STRAIGHT carved-track run (the alias caps trackE..trackW
@@ -421,6 +495,25 @@ function defineTests(qf, win) {
     qf.state.preserveZOrder = true;
     qf.importSectionToMultiZ('dig', qf.collapseRectangles([['d','d'],['d','d']]));
     deepEq(qf.getMatrix('dig', 0), [['d','d'],['d','d']]);
+  });
+  // Regression: a solid generic-`T` (carve track) block with BOTH dims > 1 must NOT collapse to
+  // `T(WxH)` on the dig tab, because the #dig importer reads that form as an L-shaped carved-track
+  // CORNER (two arms only), so a collapsed 3x3 block would re-import as an L of 5 cells.
+  test('collapseRectangles leaves a solid dig T block (both dims>1) tile-by-tile', () => {
+    deepEq(qf.collapseRectangles([['T','T'],['T','T']], 'dig'), [['T','T'],['T','T']]);
+  });
+  test('collapseRectangles still folds a straight dig T run (one dim=1) to T(Nx1)', () => {
+    deepEq(qf.collapseRectangles([['T','T','T']], 'dig'), [['T(3x1)','','']]);
+  });
+  test('collapseRectangles still folds a solid T block on a NON-dig tab (no corner ambiguity)', () => {
+    deepEq(qf.collapseRectangles([['T','T'],['T','T']], 'build'), [['T(2x2)',''],['','']]);
+  });
+  test('collapseRectangles -> importSectionToMultiZ round-trips a solid dig T block', () => {
+    setup(qf, 3, 3, 1);
+    qf.state.preserveZOrder = true;
+    qf.importSectionToMultiZ('dig', qf.collapseRectangles(
+      [['T','T','T'],['T','T','T'],['T','T','T']], 'dig'));
+    eq(qf.getMatrix('dig', 0).flat().every(v => v === 'T'), true);
   });
 
   // In #dig a bare `T(WxH)` with |W|>1 AND |H|>1 is an L-shaped carved-track CORNER, NOT a
@@ -511,6 +604,12 @@ function defineTests(qf, win) {
     deepEq(qf.splitStackedZoneTypes('n{name=Herd} t{active=false}'), []);
     deepEq(qf.splitStackedZoneTypes(''), []);
     deepEq(qf.splitStackedZoneTypes(null), []);
+  });
+  test('a quoted prop value containing a literal "}" does not truncate the match', () => {
+    // A free-text field (name/location/profession) is JSON.stringify-quoted on compose, which
+    // does not escape '}', so a user-typed "Pen}1" legally lands inside the token as name="Pen}1".
+    // A naive [^}]* brace-content match would stop at that inner '}' and misread the token.
+    deepEq(qf.splitStackedZoneTypes('n{name="Pen}1"}t{active=false}'), ['n','t']);
   });
 
   // The per-tab modeline header (label/start/hidden/message/comment) is assembled by
@@ -654,6 +753,67 @@ function defineTests(qf, win) {
     eq(m[0][0], 'd', 'top-left preserved');
   });
 
+  group('Editing: tool panel');
+  // Clicking a palette button only ever set state.selectedToolByTab and refreshed the label;
+  // it never reset the property-panel fields, unlike the eyedropper's populatePanelFromToken
+  // (which always resyncs every field for the picked token). So a stale filled-in field from
+  // a previously selected token (e.g. burrow name/create left over from "add") silently kept
+  // getting composed onto a newly selected, unrelated token (e.g. "erase"), with no visual cue
+  // since the panel still showed the old values. Covers the fix: switching tokens clears the
+  // panel, re-clicking the SAME already-active token does not.
+  test('switching burrow tool (add -> erase) clears the stale name/create fields', () => {
+    setup(qf);
+    qf.state.activeTab = 'burrow';
+    win.document.getElementById('burrow-name').value = 'Safe';
+    win.document.getElementById('burrow-create').checked = true;
+    win.document.querySelector('#burrow-types [data-tool="e"]').click();
+    eq(qf.state.selectedToolByTab.burrow, 'e', 'tool switched to erase');
+    eq(win.document.getElementById('burrow-name').value, '', 'stale name cleared');
+    eq(win.document.getElementById('burrow-create').checked, false, 'stale create cleared');
+  });
+  test('re-clicking the same already-active burrow tool leaves its fields alone', () => {
+    setup(qf);
+    qf.state.activeTab = 'burrow';
+    win.document.querySelector('#burrow-types [data-tool="a"]').click();
+    win.document.getElementById('burrow-name').value = 'Keep';
+    win.document.querySelector('#burrow-types [data-tool="a"]').click();
+    eq(win.document.getElementById('burrow-name').value, 'Keep', 'field untouched when tool did not change');
+  });
+
+  group('Editing: zone reverse-parse');
+  // The zone-location <select> only holds its five fixed types (tavern/temple/library/
+  // guildhall/hospital); DFHack recognises more (e.g. inn). A token carrying an out-of-list
+  // type silently blanked the select, and on repaint buildZoneProps (which emits location only
+  // when a type is set) dropped the WHOLE location, name included. The fix routes an
+  // unrepresentable type to the extra-props field so it round-trips, mirroring allow/speed.
+  test('an out-of-list zone location type round-trips via extra-props instead of vanishing', () => {
+    setup(qf);
+    qf.state.activeTab = 'zone';
+    qf.populatePanelFromToken('zone', 'm{location=inn/mainpub name="Tap Room"}');
+    eq(win.document.getElementById('zone-location').value, '', 'select is not set to an unrepresentable type');
+    eq(win.document.getElementById('zone-props').value.includes('location=inn/mainpub'), true, 'unknown location routed to extra-props');
+    eq(qf.buildZoneProps().includes('location=inn/mainpub'), true, 'location survives a repaint');
+  });
+  test('an in-list zone location still populates the select and name fields', () => {
+    setup(qf);
+    qf.state.activeTab = 'zone';
+    qf.populatePanelFromToken('zone', 'm{location=temple/grand}');
+    eq(win.document.getElementById('zone-location').value, 'temple', 'known type fills the select');
+    eq(win.document.getElementById('zone-location-name').value, 'grand', 'label fills the name field');
+    eq(win.document.getElementById('zone-props').value.includes('location='), false, 'known location not duplicated into extra-props');
+  });
+  // unq (reverse-parse) must invert the emit side's JSON.stringify, which escapes BOTH " and \.
+  // The old code only undid \", leaving \\ intact, so a name with a literal backslash doubled
+  // its backslashes on every eyedropper -> repaint. The token below carries the 3-char name
+  // a\b (written a\\b on disk); it must come back as a\b and re-emit single-escaped, unchanged.
+  test('a zone name containing a backslash round-trips without doubling', () => {
+    setup(qf);
+    qf.state.activeTab = 'zone';
+    qf.populatePanelFromToken('zone', 'n{name="a\\\\b"}');
+    eq(win.document.getElementById('zone-name').value, 'a\\b', 'backslash unescaped to a single backslash');
+    eq(qf.buildZoneProps().includes('name="a\\\\b"'), true, 'repaint re-emits the same single-escaped name');
+  });
+
   group('Editing: transforms');
   test('rotateMatrixCW rotates a 3x2 into a 2x3', () => {
     const out = qf.rotateMatrixCW([['a','b'],['c','d'],['e','f']]);
@@ -756,6 +916,14 @@ function defineTests(qf, win) {
     setup(qf, 5, 5, 1);
     eq(qf.lineCells(0,0,4,4,1).length, qf.bresenhamLine(0,0,4,4).length);
   });
+  test('lineCells honors an EVEN thickness (regression: size 2 painted 1-wide)', () => {
+    setup(qf, 5, 5, 1);
+    // A single-point line thickened by t paints a t x t block. Even sizes used
+    // to collapse to the next-lower odd width (2 -> 1 cell); now 2 -> 2x2 = 4.
+    eq(qf.lineCells(2,2,2,2,2).length, 4);
+    eq(qf.lineCells(2,2,2,2,3).length, 9); // odd unchanged (3x3)
+    eq(qf.lineCells(2,2,2,2,4).length, 16); // 4x4
+  });
 
   group('Editing: flood fill');
   test('flood fill of a blank grid fills every cell', () => {
@@ -772,6 +940,46 @@ function defineTests(qf, win) {
     eq(m[0][1], 'x', 'barrier untouched');
     eq(m[0][2], '', 'right side untouched');
   });
+  test('flood fill with Mirror V enabled fills the whole contiguous region, not just up to its own mirror echo', () => {
+    setup(qf, 1, 5, 1);
+    qf.state.mirrorVEnabled = true;
+    qf.state.mirrorVIndex = 1; // pairs column 0 with column 1
+    qf.floodFill(0, 0, 'd');
+    const m = qf.getMatrix('dig', 0);
+    eq(m[0].every(v => v === 'd'), true, 'the mirrored echo written into column 1 must not look like a wall to the fill\'s own containment check');
+  });
+  test('floodFill: a mirror axis straddling the flood does not swap which cell is literal vs mirrored', () => {
+    setup(qf, 1, 4, 1);
+    qf.state.activeTab = 'build';
+    qf.state.mirrorVEnabled = true;
+    qf.state.mirrorVIndex = 1; // pairs column 0 with column 1
+    qf.floodFill(0, 0, 'trackstopE');
+    const m = qf.getMatrix('build', 0);
+    eq(m[0][0], 'trackstopE', 'column 0 is visited directly by the flood; column 1\'s later direct visit must not echo back and overwrite it');
+    eq(m[0][1], 'trackstopE', 'column 1 is visited directly by the flood too, must keep the literal token');
+  });
+  test('applyToolBatch: a mirror axis straddling a brush/shape stamp does not swap which cell is literal vs mirrored', () => {
+    setup(qf, 1, 4, 1);
+    qf.state.activeTab = 'build';
+    qf.state.mirrorVEnabled = true;
+    qf.state.mirrorVIndex = 1; // pairs column 0 with column 1
+    qf.applyToolBatch([[0,0],[0,1]], 'trackstopE'); // e.g. a 2-wide brush stamp straddling the axis
+    const m = qf.getMatrix('build', 0);
+    eq(m[0][0], 'trackstopE', 'column 0 is a direct stamp cell, must keep the literal token, not the other cell\'s mirror echo');
+    eq(m[0][1], 'trackstopE', 'column 1 is a direct stamp cell too, must not be overwritten by column 0\'s mirror echo');
+  });
+  test('applyTool: a shared stroke guard stops a later freehand cell\'s mirror echo from clobbering an earlier cell\'s direct paint', () => {
+    setup(qf, 1, 4, 1);
+    qf.state.activeTab = 'build';
+    qf.state.mirrorVEnabled = true;
+    qf.state.mirrorVIndex = 1; // pairs column 0 with column 1
+    const guard = new Set();
+    qf.applyTool(0, 0, 'trackstopE', guard); // 1st onCellEnter of a freehand drag: direct paint, echoes into column 1
+    qf.applyTool(0, 1, 'trackstopE', guard); // 2nd onCellEnter, a SEPARATE call: direct paint of column 1
+    const m = qf.getMatrix('build', 0);
+    eq(m[0][0], 'trackstopE', 'column 0 was directly painted by the 1st call; the 2nd call\'s echo must not overwrite it');
+    eq(m[0][1], 'trackstopE', 'column 1 is a direct paint from the 2nd call');
+  });
 
   group('Editing: undo / redo');
   test('undo restores prior value, redo reapplies it', () => {
@@ -784,6 +992,20 @@ function defineTests(qf, win) {
     eq(qf.getMatrix('dig',0)[1][1], '', 'undo cleared the cell');
     qf.historyRedo();
     eq(qf.getMatrix('dig',0)[1][1], 'd', 'redo restored the cell');
+  });
+  // The undo/redo button state + count read the history through getHistoryBucket
+  // (which applies mapZ, display->storage index), matching the bucket historyUndo/
+  // historyRedo actually mutate. A raw history[tab][activeZ] read diverges on any
+  // 2+ Z-level blueprint (mapZ(0) != 0), showing another floor's state. Pins the fix.
+  test('active floor history reads through mapZ, not the raw display index (2 Z-levels)', () => {
+    setup(qf, 3, 3, 2);
+    assert(qf.mapZ(0) === 1, 'mapZ(0) should be 1 for a 2-floor blueprint, got ' + qf.mapZ(0));
+    qf.historyBegin();
+    qf.setCellValue('dig', qf.state.activeZ, 1, 1, 'd');
+    qf.historyCommit();
+    eq(qf.getHistoryBucket().idx, 1, 'the accessor the buttons use reports one undoable step');
+    // The old buggy read (raw display index) points at the OTHER, untouched floor.
+    eq(qf.state.history['dig'][0].idx, 0, 'raw history[tab][activeZ] is the wrong, empty bucket');
   });
 
   group('Editing: copy / paste');

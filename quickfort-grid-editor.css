@@ -507,6 +507,10 @@
     table.grid td.paste-preview { position: relative; }
     table.grid td .paste-ghost { position: absolute; inset: 0; box-sizing: border-box; pointer-events: none; z-index: 4;
       display: flex; align-items: center; justify-content: center; padding: 0 2px; border-radius: 0; font-weight: 600; opacity: 0.85; }
+    /* A blank source tile in the paste buffer that will overwrite existing destination content
+       (Skip blanks off): hatch it in --bad instead of a token colour, so the loss is visible. */
+    table.grid td .paste-ghost.paste-ghost-clear { opacity: 0.55;
+      background: repeating-linear-gradient(45deg, var(--bad) 0, var(--bad) 3px, transparent 3px, transparent 7px); }
     /* Help popover */
     .popover {
       position: absolute;

@@ -879,6 +879,8 @@ const state = {
       painting: false,
       lastPaintVal: '',
       lastPaintCell: null,  // last cell painted this freehand stroke, for gap-free fast drags
+      strokeGuard: null,    // Set of "r,c" already directly painted this freehand stroke, so a
+                             // later cell's mirror echo can't clobber an earlier cell's direct paint
 
       zoom: 1,
       brushSize: 1,
@@ -1129,6 +1131,14 @@ const state = {
     const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(cols);
     const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(rows);
     resizeAllGrids(rows, cols);
+    // A shrink can strand the selection rect outside the new bounds (a mispositioned
+    // overlay, and copy/cut/move acting on an off-grid, inverted range); drop it when
+    // it no longer fits, mirroring afterStructuralResize's stale-rect clear. A grow, or
+    // a shrink that doesn't reach the selection, keeps it.
+    const sr = state.selectionRect;
+    if (sr && (Math.max(sr.r0, sr.r1) >= rows || Math.max(sr.c0, sr.c1) >= cols)) {
+      clearSelection();
+    }
     updateGridSizeBadge();
     renderGrid();
   }
@@ -1248,6 +1258,18 @@ const state = {
     }
 
     function setActiveTab(id) {
+      // A copy buffer's tokens only make sense in the tab they were copied from
+      // (Dig/Build/Place/Zone/Burrow each have their own vocabulary), so switching
+      // mode tab mid paste-mode cancels the paste rather than letting a later
+      // click stamp mismatched tokens into the new tab. Z-level and blueprint
+      // switches deliberately leave paste mode alone (stamping the same design
+      // onto another floor, or into another blueprint's SAME tab, is the intended
+      // repeat-paste workflow: see pasteBufferAt's "keep paste mode active").
+      if (state.pasteMode && id !== state.activeTab) {
+        state.pasteMode = false;
+        clearPastePreview();
+        updateSelectionButtons();
+      }
       state.activeTab = id;
       renderTabs();
       activeTabLbl.textContent = Tabs.find(t => t.id === id).label.toLowerCase();
@@ -1263,6 +1285,7 @@ const state = {
       renderRecentTray(); // show this tab's recent tokens
       if (state.legendVisible) renderLegend();
       renderGrid();
+      refreshCountsModalIfOpen(); // a "Selection only" tally scoped to the old tab is now stale/invalid
     }
 
     // ===== Collapsible tool categories =====
@@ -1377,9 +1400,6 @@ const state = {
         const base = stripPropsAndCfg(s);
         return base ? base.charAt(0) : '';
       }
-      if (scopeId === 'query') {
-        return 'q';
-      }
       return s;
     }
 
@@ -1403,7 +1423,9 @@ const state = {
       // (greedy) instead misread a braceless first zone like `nt{active=false}`
       // (base `n` + overlay `t{...}`, exactly what the #zone-overlay field emits) as a
       // single unknown type "nt", so its badge/gradient/tooltip/legend all failed.
-      const groupRe = /([A-Za-z])(?:\/[A-Za-z0-9_]+)?(?:\{[^}]*\})?/g;
+      // {...} is quote-aware (a quoted prop value like name="Pen}1" may itself contain '}'),
+      // same fix as populatePanelFromToken's reverse-parse regexes.
+      const groupRe = /([A-Za-z])(?:\/[A-Za-z0-9_]+)?(?:\{(?:"(?:[^"\\]|\\.)*"|[^}])*\})?/g;
       const types = [];
       let consumed = 0, m;
       while ((m = groupRe.exec(s)) !== null) {
@@ -1675,8 +1697,20 @@ const state = {
       const cs = window.getComputedStyle(wrap);
       const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
       const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-      const availW = wrap.clientWidth - padX;
-      const availH = wrap.clientHeight - padY;
+      let availW = wrap.clientWidth - padX;
+      let availH = wrap.clientHeight - padY;
+      // The ruler overlay (body.show-ruler) is absolutely positioned outside the
+      // table's own box (negative left/top offset), so table.offsetWidth/Height
+      // never sees it and it can protrude past the wrap's padding uncounted.
+      // Shrink the available space by however far it actually protrudes so
+      // "fit" also fits the ruler, not just the table.
+      if (document.body.classList.contains('show-ruler') && rulerRowEl && rulerColEl) {
+        const wrapRect = wrap.getBoundingClientRect();
+        const rowRect = rulerRowEl.getBoundingClientRect();
+        const colRect = rulerColEl.getBoundingClientRect();
+        availW -= Math.max(0, (wrapRect.left + parseFloat(cs.paddingLeft)) - rowRect.left);
+        availH -= Math.max(0, (wrapRect.top + parseFloat(cs.paddingTop)) - colRect.top);
+      }
       const tw = table.offsetWidth, th = table.offsetHeight;
       if (tw <= 0 || th <= 0 || availW <= 0 || availH <= 0) return;
       const ratio = Math.min(availW / tw, availH / th) * 0.98; // small margin so edges aren't flush
@@ -1777,7 +1811,8 @@ const state = {
       if (shape === 'free') {
         historyBegin();
         state.painting = true;
-        applyBrushAt(r, c, val);
+        state.strokeGuard = new Set();
+        applyBrushAt(r, c, val, state.strokeGuard);
         state.lastPaintCell = { r, c };
         document.addEventListener('mouseup', onMouseUpOnce, { once: true });
         return;
@@ -1810,10 +1845,10 @@ const state = {
         if (prev && (prev.r !== r || prev.c !== c)) {
           const segment = bresenhamLine(prev.r, prev.c, r, c);
           for (let i = 1; i < segment.length; i++) {
-            applyBrushAt(segment[i][0], segment[i][1], state.lastPaintVal);
+            applyBrushAt(segment[i][0], segment[i][1], state.lastPaintVal, state.strokeGuard);
           }
         } else {
-          applyBrushAt(r, c, state.lastPaintVal);
+          applyBrushAt(r, c, state.lastPaintVal, state.strokeGuard);
         }
         state.lastPaintCell = { r, c };
         return;
@@ -1860,6 +1895,7 @@ const state = {
       const wasPainting = state.painting;
       state.painting = false;
       state.lastPaintCell = null;
+      state.strokeGuard = null;
       if (!wasShaping) { if (wasPainting) { historyCommit(); renderGrid(); } return; }
       const { r: r0, c: c0 } = state.shapeStart;
       const { r: r1, c: c1 } = state.shapeLast || state.shapeStart;
@@ -1874,7 +1910,7 @@ const state = {
       }
       clearShapePreview();
       const val = state.lastPaintVal;
-      for (const [rr,cc] of cells) applyTool(rr, cc, val);
+      applyToolBatch(cells, val);
       state.shaping = false;
       state.shapeStart = null;
       state.shapeLast = null;
@@ -2003,6 +2039,7 @@ const state = {
       state.selectionRect = null;
       clearSelectionOverlay();
       updateSelectionButtons();
+      refreshCountsModalIfOpen(); // an open "Selection only" tally must drop stale scope too
     }
     // Select the entire active grid (Ctrl/Cmd+A). Sets a full-extent selection rect
     // for the active tab + Z-level so the existing copy/cut/erase/transform actions can
@@ -2192,6 +2229,16 @@ const state = {
       const r1 = Math.min(mat.length-1, Math.max(rect.r0, rect.r1));
       const c0 = Math.max(0, Math.min(rect.c0, rect.c1));
       const c1 = Math.min(mat[0].length-1, Math.max(rect.c0, rect.c1));
+      // In-place rotation is only well-defined for a SQUARE selection. A non-square rotate swaps the
+      // footprint (W x H -> H x W); anchored at the top-left it would silently overwrite unselected
+      // neighbour cells and clip any rotated content past the grid edge (both are data loss). Mirror
+      // preserves the footprint, so only rotate is guarded. The paste path DOES handle a resized
+      // buffer, so a non-square region can still be rotated by copying it and rotating the paste preview.
+      if ((kind === 'rotate' || kind === 'rotateCCW') && (r1 - r0) !== (c1 - c0)) {
+        alert('Rotate needs a square selection (this one is ' + (c1 - c0 + 1) + ' wide x ' + (r1 - r0 + 1) +
+          ' tall). To rotate a non-square region: copy it, start Paste, rotate the paste preview, then click to place it.');
+        return;
+      }
       const sub = [];
       for (let r=r0; r<=r1; r++) { const row=[]; for (let c=c0; c<=c1; c++) row.push(mat[r][c] ?? ''); sub.push(row); }
       const out = applyMatTransform(sub, kind);
@@ -2209,7 +2256,10 @@ const state = {
       historyCommit();
       // Update the selection rect to the new footprint (clamped).
       state.selectionRect = { r0, c0, r1: Math.min(R-1, r0 + out.length - 1), c1: Math.min(C-1, c0 + (out[0]?.length||1) - 1), tab: rect.tab, z: rect.z };
-      maybeRenderPreview();
+      // Full re-render so stacked-zone badges, onion-skin ghosts, tooltips, and the
+      // legend catch up: setCellValue's per-cell live patch (used above) only updates
+      // that cell's own text/colour, matching every other paint entry point.
+      renderGrid();
       applySelectionOverlayFromRect();
       updateSelectionButtons();
     }
@@ -2240,7 +2290,10 @@ const state = {
         }
       }
       historyCommit();
-      maybeRenderPreview();
+      // Full re-render so stacked-zone badges, onion-skin ghosts, tooltips, and the
+      // legend catch up: setCellValue's per-cell live patch (used above) only updates
+      // that cell's own text/colour, matching every other paint entry point.
+      renderGrid();
       // clear selection overlay and exit modes
       clearSelection();
       state.selectionMode = false;
@@ -2264,7 +2317,10 @@ const state = {
       historyBegin();
       for (let r=r0; r<=r1; r++) for (let c=c0; c<=c1; c++) setCellValue(rect.tab, rect.z, r, c, '');
       historyCommit();
-      maybeRenderPreview();
+      // Full re-render so stacked-zone badges, onion-skin ghosts, tooltips, and the
+      // legend catch up: setCellValue's per-cell live patch (used above) only updates
+      // that cell's own text/colour, matching every other paint entry point.
+      renderGrid();
       // keep the selection live (overlay + toolbar) for further edits
       applySelectionOverlayFromRect();
       updateSelectionButtons();
@@ -2287,7 +2343,10 @@ const state = {
       historyBegin();
       for (let r=r0; r<=r1; r++) for (let c=c0; c<=c1; c++) setCellValue(rect.tab, rect.z, r, c, token);
       historyCommit();
-      maybeRenderPreview();
+      // Full re-render so stacked-zone badges, onion-skin ghosts, tooltips, and the
+      // legend catch up: setCellValue's per-cell live patch (used above) only updates
+      // that cell's own text/colour, matching every other paint entry point.
+      renderGrid();
       applySelectionOverlayFromRect();
       updateSelectionButtons();
     }
@@ -2325,10 +2384,15 @@ const state = {
       for (let i = 0; i < sub.length; i++) for (let j = 0; j < sub[i].length; j++) {
         setCellValue(rect.tab, rect.z, newMinR + i, newMinC + j, sub[i][j]);
       }
-      historyCommit();
-      // Move the selection rectangle with the contents and keep it live.
+      // Move the selection rectangle with the contents BEFORE committing: historyCommit
+      // triggers refreshCountsModalIfOpen, which reads state.selectionRect for the
+      // "Selection only" tile-counts region, so it must already reflect the destination.
       state.selectionRect = { ...rect, r0: rect.r0 + aR, c0: rect.c0 + aC, r1: rect.r1 + aR, c1: rect.c1 + aC };
-      maybeRenderPreview();
+      historyCommit();
+      // Full re-render so stacked-zone badges, onion-skin ghosts, tooltips, and the
+      // legend catch up: setCellValue's per-cell live patch (used above) only updates
+      // that cell's own text/colour, matching every other paint entry point.
+      renderGrid();
       applySelectionOverlayFromRect();
       positionSelToolbar();
       updateSelectionButtons();
@@ -2369,43 +2433,101 @@ const state = {
           }
         }
       });
+      // Full re-render so stacked-zone badges, onion-skin ghosts (a pasted blank can
+      // reveal one), tooltips, and the legend catch up, matching every other paint
+      // entry point (floodFill, shape fill, freehand stroke end): setCellValue's
+      // per-cell live patch only updates that cell's own text/colour, not these.
+      renderGrid();
       maybeRenderPreview();
       // keep paste mode active after placement; refresh preview at current hover
       applyPastePreviewFromHover();
       updateSelectionButtons();
     }
 
-    function applyTool(r, c, val) {
+    // Each live-mirrored copy is re-aimed the same way transformSelectionOrBuffer /
+    // flipWholeBlueprint already re-aim a mirrored track/building token (reaimTrackToken /
+    // reaimBuildingToken), so a directional #build token (bridge, roller, track stop, ...)
+    // painted with Mirror on faces the correct mirrored direction instead of an identical,
+    // wrongly-aimed copy. mirrorVEnabled mirrors left-right (kind 'my'), mirrorHEnabled
+    // mirrors top-bottom (kind 'mx'), matching the TRACK_DIR_REMAP kinds used elsewhere.
+    // Returns the mirror echo targets for one painted point as [rr, cc, mirroredVal] triples
+    // (support half-cell axis positions), shared by both the single-point and batch appliers
+    // below so they can never disagree on what a mirror echo looks like.
+    function mirrorEchoTargets(r, c, val) {
+      const reaim = (v, kind) => reaimBuildingToken(reaimTrackToken(v, kind), kind);
+      const alpha = Number(state.mirrorVIndex) || 0;
+      const beta = Number(state.mirrorHIndex) || 0;
+      const out = [];
+      if (state.mirrorVEnabled) {
+        out.push([r, Math.round(2*alpha - 1 - c), reaim(val, 'my')]);
+      }
+      if (state.mirrorHEnabled) {
+        out.push([Math.round(2*beta - 1 - r), c, reaim(val, 'mx')]);
+        if (state.mirrorVEnabled) {
+          out.push([Math.round(2*beta - 1 - r), Math.round(2*alpha - 1 - c), reaim(reaim(val, 'my'), 'mx')]);
+        }
+      }
+      return out;
+    }
+    // guard: optional Set of "r,c" already directly painted earlier in the SAME multi-call
+    // paint operation (a freehand stroke via state.strokeGuard, or one floodFill's BFS). A
+    // single call only sees its own point's echoes; without the guard, a later cell's echo
+    // can silently overwrite an earlier cell's direct paint from a few calls ago in the
+    // same operation.
+    function applyTool(r, c, val, guard) {
       const mat = getMatrix(state.activeTab, state.activeZ);
       const R = mat.length, C = mat[0].length;
       function inBounds(rr, cc) { return rr>=0 && cc>=0 && rr<R && cc<C; }
       const setCell = (rr, cc, v) => { if (!inBounds(rr,cc)) return; setCellValue(state.activeTab, state.activeZ, rr, cc, v); };
-      // original
-      const coords = new Set();
-      const key = (rr,cc)=> rr+","+cc;
-      if (inBounds(r,c)) coords.add(key(r,c));
-      // mirror across vertical/horizontal axes (support half-cell positions)
-      const alpha = Number(state.mirrorVIndex) || 0;
-      const beta = Number(state.mirrorHIndex) || 0;
-      if (state.mirrorVEnabled) {
-        const c2 = Math.round(2*alpha - 1 - c);
-        if (inBounds(r, c2)) coords.add(key(r, c2));
-      }
-      if (state.mirrorHEnabled) {
-        const r2 = Math.round(2*beta - 1 - r);
-        if (inBounds(r2, c)) coords.add(key(r2, c));
-        if (state.mirrorVEnabled) {
-          const c2 = Math.round(2*alpha - 1 - c);
-          const r2b = Math.round(2*beta - 1 - r);
-          if (inBounds(r2b, c2)) coords.add(key(r2b, c2));
-        }
-      }
+      // "r,c" -> value; first write wins so a mirror landing back on the original cell (painting
+      // exactly on the mirror axis) keeps the original val, same as the old Set's de-dup.
+      const cells = new Map();
+      const put = (rr, cc, v) => { if (!inBounds(rr, cc)) return; const k = rr+","+cc; if (!cells.has(k)) cells.set(k, v); };
+      put(r, c, val);
+      if (guard && inBounds(r, c)) guard.add(r+","+c);
+      mirrorEchoTargets(r, c, val).forEach(([rr, cc, v]) => {
+        if (guard && guard.has(rr+","+cc)) return; // don't clobber an earlier direct paint this stroke
+        put(rr, cc, v);
+      });
       // apply
-      coords.forEach(k=>{
+      cells.forEach((v, k) => {
         const [rr,cc] = k.split(',').map(Number);
-        setCell(rr, cc, val);
+        setCell(rr, cc, v);
       });
       // Refresh previews so they reflect changes (esp. dig overlay)
+      maybeRenderPreview();
+    }
+    // Batch form of applyTool for a static list of cells painted as one action (brush stamp,
+    // committed shape fill): every cell in the list is a DIRECT paint of val, so a direct write
+    // always wins over any OTHER cell's mirror echo landing on the same spot, regardless of the
+    // list's iteration order. Calling applyTool once per cell (the old brush/shape code) instead
+    // only deduped a single point against its OWN echoes, so when a mirror axis straddled the
+    // stamp (e.g. a 2-wide brush landing on both sides of the axis), whichever cell's applyTool
+    // call ran last would overwrite the other's direct value with its mirror echo, silently
+    // swapping which cell held the literal token vs the mirrored one.
+    // guard: same cross-call stroke guard as applyTool, for a freehand drag calling this once
+    // per brush-sized step (see onCellEnter).
+    function applyToolBatch(cellList, val, guard) {
+      const mat = getMatrix(state.activeTab, state.activeZ);
+      const R = mat.length, C = mat[0].length;
+      const inBounds = (rr, cc) => rr>=0 && cc>=0 && rr<R && cc<C;
+      const setCell = (rr, cc, v) => { if (!inBounds(rr,cc)) return; setCellValue(state.activeTab, state.activeZ, rr, cc, v); };
+      const direct = new Map();
+      for (const [rr, cc] of cellList) { if (inBounds(rr, cc)) direct.set(rr+","+cc, val); }
+      if (guard) { for (const k of direct.keys()) guard.add(k); }
+      const echoes = new Map();
+      for (const [rr, cc] of cellList) {
+        if (!inBounds(rr, cc)) continue;
+        mirrorEchoTargets(rr, cc, val).forEach(([er, ec, ev]) => {
+          if (!inBounds(er, ec)) return;
+          const k = er+","+ec;
+          if (direct.has(k)) return; // a direct paint of this cell always wins over another cell's echo
+          if (guard && guard.has(k)) return; // ...or over an earlier direct paint this stroke
+          if (!echoes.has(k)) echoes.set(k, ev); // first echo wins, same tie-break as applyTool
+        });
+      }
+      direct.forEach((v, k) => { const [rr, cc] = k.split(',').map(Number); setCell(rr, cc, v); });
+      echoes.forEach((v, k) => { const [rr, cc] = k.split(',').map(Number); setCell(rr, cc, v); });
       maybeRenderPreview();
     }
 
@@ -2470,6 +2592,7 @@ const state = {
       updateTabIndicators();
       updateLayerContentDots();
       refreshToolMatchHighlight();
+      refreshCountsModalIfOpen();
     }
 
     function historyUndo() {
@@ -2489,6 +2612,7 @@ const state = {
       updateTabIndicators();
       updateLayerContentDots();
       refreshToolMatchHighlight();
+      refreshCountsModalIfOpen();
     }
 
     function historyRedo() {
@@ -2507,6 +2631,7 @@ const state = {
       updateTabIndicators();
       updateLayerContentDots();
       refreshToolMatchHighlight();
+      refreshCountsModalIfOpen();
     }
 
     function getBrushSize() {
@@ -2515,19 +2640,19 @@ const state = {
       return Math.max(1, Math.min(25, isNaN(raw) ? 1 : raw));
     }
 
-    function applyBrushAt(r, c, val) {
+    function applyBrushAt(r, c, val, guard) {
       const size = getBrushSize();
-      if (size <= 1) { applyTool(r, c, val); return; }
+      if (size <= 1) { applyTool(r, c, val, guard); return; }
       const half = Math.floor((size - 1) / 2);
       const r0 = r - half;
       const c0 = c - half;
       const r1 = r0 + size - 1;
       const c1 = c0 + size - 1;
+      const cells = [];
       for (let rr = r0; rr <= r1; rr++) {
-        for (let cc = c0; cc <= c1; cc++) {
-          applyTool(rr, cc, val);
-        }
+        for (let cc = c0; cc <= c1; cc++) cells.push([rr, cc]);
       }
+      applyToolBatch(cells, val, guard);
     }
 
     // ===== Shape tools helpers =====
@@ -2574,7 +2699,8 @@ const state = {
       state.pastePreviewCells.clear();
     }
     function setPastePreview(cells) {
-      // cells can be [[r,c]] or [[r,c,color,val]]
+      // cells can be [[r,c]], [[r,c,color,val]], or [[r,c,color,val,isClear]] (isClear:
+      // a blank source tile that will overwrite existing destination content).
       const next = new Set(cells.map(([r,c]) => rcKey(r,c)));
       state.pastePreviewCells.forEach(k => { if (!next.has(k)) {
         const [rStr,cStr] = k.split(',');
@@ -2593,31 +2719,26 @@ const state = {
         // Build or update ghost element
         let ghost = td.querySelector('.paste-ghost');
         if (!ghost) { ghost = document.createElement('div'); ghost.className = 'paste-ghost'; td.appendChild(ghost); }
-        const bgHex = item[2] || '#666666';
-        const val = item[3] ?? '';
-        ghost.style.background = bgHex;
-        ghost.textContent = cellTextForDisplay(val, state.activeTab, state.showFullSyntax);
-        // choose readable text color based on bg
-        const lum = luminanceOfHex(bgHex);
-        ghost.style.color = lum > 0.6 ? '#111' : '#fff';
+        const isClear = !!item[4];
+        ghost.classList.toggle('paste-ghost-clear', isClear);
+        if (isClear) {
+          // Warn instead of painting a token colour: this cell has content today and the
+          // paste (with Skip blanks off) will overwrite it with nothing.
+          ghost.style.background = '';
+          ghost.textContent = '';
+          ghost.style.color = '';
+        } else {
+          const bgHex = item[2] || '#666666';
+          const val = item[3] ?? '';
+          ghost.style.background = bgHex;
+          ghost.textContent = cellTextForDisplay(val, state.activeTab, state.showFullSyntax);
+          // choose readable text color based on bg
+          const lum = luminanceOfHex(bgHex);
+          ghost.style.color = lum > 0.6 ? '#111' : '#fff';
+        }
         state.pastePreviewCells.add(k);
       });
       state.pastePreviewCells = next;
-    }
-    function pasteFootprintCells(r, c) {
-      const mat = getMatrix(state.activeTab, state.activeZ);
-      const R = mat.length, C = mat[0].length;
-      const h = state.copyBuffer?.length || 0;
-      const w = state.copyBuffer?.[0]?.length || 0;
-      const cells = [];
-      for (let dr=0; dr<h; dr++) {
-        for (let dc=0; dc<w; dc++) {
-          const rr = r + dr, cc = c + dc;
-          if (rr<0 || cc<0 || rr>=R || cc>=C) continue;
-          cells.push([rr, cc]);
-        }
-      }
-      return cells;
     }
     function rgbaFromHex(hex, alpha) {
       const {r,g,b} = hexToRgb(hex);
@@ -2634,7 +2755,6 @@ const state = {
         const base = stripPropsAndCfg(s);
         return getBuildColorForToken(base);
       }
-      if (scopeId === 'query') return COLOR_QUERY.q || '#ff9500';
       return null;
     }
     function applyPastePreviewFromHover() {
@@ -2652,10 +2772,18 @@ const state = {
             const rr = or + dr, cc = oc + dc;
             if (rr<0 || cc<0 || rr>=mat.length || cc>=mat[0].length) continue;
             const v = state.copyBuffer[dr][dc] ?? '';
-            // Always skip blank tokens in preview; show only copied tiles
-            if (!String(v)) continue;
+            if (!String(v)) {
+              // A blank source tile only touches the destination when Skip blanks is
+              // OFF (the default): pasteBufferAt still writes '' there, silently
+              // clearing whatever the destination held. Flag it so the ghost warns
+              // instead of just omitting it (which looked like the hole was
+              // transparent and would leave the destination untouched).
+              if (state.pasteSkipBlanks || !mat[rr][cc]) continue;
+              triples.push([rr, cc, null, '', true]);
+              continue;
+            }
             const baseHex = baseColorForToken(state.activeTab, v) || '#666666';
-            triples.push([rr, cc, baseHex, v]);
+            triples.push([rr, cc, baseHex, v, false]);
           }
         }
       });
@@ -2731,11 +2859,20 @@ const state = {
       const R = mat.length, C = mat[0].length;
       const pts = bresenhamLine(r0,c0,r1,c1);
       const t = Math.max(1, thickness|0);
-      const half = Math.floor((t-1)/2);
+      // Thickness is centered on each Bresenham point. An odd width sits
+      // symmetric; an even width can't, so the extra cell goes down/right,
+      // matching the freehand brush's own off-center convention (applyBrushAt:
+      // half = floor((size-1)/2), extends to r0 + size - 1). A single
+      // floor((t-1)/2) for both bounds silently dropped every EVEN size to the
+      // next-lower odd width (brush size 2 painted a 1-wide line), unlike
+      // rectCells / circleCells, whose borders already honor an even thickness
+      // exactly. Odd sizes are unchanged (loHalf === hiHalf when t is odd).
+      const loHalf = Math.floor((t-1)/2);
+      const hiHalf = Math.floor(t/2);
       const out = new Set();
       for (const [r,c] of pts) {
-        for (let dr=-half; dr<=half; dr++) {
-          for (let dc=-half; dc<=half; dc++) {
+        for (let dr=-loHalf; dr<=hiHalf; dr++) {
+          for (let dc=-loHalf; dc<=hiHalf; dc++) {
             const rr = r+dr, cc = c+dc;
             if (rr>=0 && cc>=0 && rr<R && cc<C) out.add(rcKey(rr,cc));
           }
@@ -2781,6 +2918,11 @@ const state = {
       const target = mat[r][c];
       if (target === val) return;
       const R = mat.length, C = mat[0].length;
+      // Snapshot the pre-fill grid for the containment check below. applyTool can write a
+      // MIRRORED echo into a cell that BFS hasn't reached yet (Mirror V/H paint), which would
+      // otherwise flip that cell away from `target` mid-fill and falsely block containment,
+      // truncating the fill through cells that were genuinely contiguous blank/target region.
+      const snapshot = mat.map(row => row.slice());
       // If a selection is live on THIS grid, it masks the fill: the flood is
       // clipped to the selection rectangle so it can't leak out through a gap
       // (universal bucket-fill behavior; lets you fill one bounded room without
@@ -2797,10 +2939,18 @@ const state = {
       const NEIGHBOURS = [[1,0],[-1,0],[0,1],[0,-1]];
       const q = [[r,c]];
       const seen = new Set([rcKey(r,c)]);
+      // Guard against a mirror echo (Mirror V/H) from a LATER-visited cell in this same
+      // flood clobbering an EARLIER cell's direct paint. mirrorEchoTargets is symmetric,
+      // so once BFS reaches a mirrored pair's other half it echoes right back onto the
+      // first cell; without a guard, whichever half BFS happens to visit last would
+      // silently win as the literal cell and demote the other to the mirrored value,
+      // purely depending on traversal order. Same fix shape as state.strokeGuard for a
+      // freehand drag, scoped to just this one flood-fill call.
+      const guard = new Set();
       let head = 0, steps = 0, cap = 50000;
       while (head < q.length) {
         const [rr,cc] = q[head++];
-        applyTool(rr, cc, val);
+        applyTool(rr, cc, val, guard);
         steps++; if (steps > cap) break;
         for (const [dr,dc] of NEIGHBOURS) {
           const r2 = rr+dr, c2 = cc+dc;
@@ -2808,7 +2958,7 @@ const state = {
           if (!inClip(r2, c2)) continue;
           const k = rcKey(r2,c2);
           if (seen.has(k)) continue;
-          if (mat[r2][c2] === target) { seen.add(k); q.push([r2,c2]); }
+          if (snapshot[r2][c2] === target) { seen.add(k); q.push([r2,c2]); }
         }
       }
     }
@@ -2837,8 +2987,16 @@ const state = {
             el.addEventListener('click', () => {
               if (scope !== state.activeTab) return; // tool applies only to its grid
               const val = el.getAttribute('data-tool') || '';
+              const changedTool = state.selectedToolByTab[scope] !== val;
               state.selectedToolByTab[scope] = val;
-              updateToolUI();
+              // Switching to a genuinely different base token starts its property panel
+              // fresh, same as the eyedropper's populatePanelFromToken already does for a
+              // reverse-parsed token; otherwise a stale filled-in field from the previous
+              // token (e.g. burrow name/create left over from "add") keeps getting composed
+              // onto the newly selected one (e.g. "erase"), with no visual cue since the
+              // panel still shows the old values. Re-clicking the SAME already-active button
+              // is left alone (clearToolOptions would otherwise wipe fields with no reason).
+              if (changedTool) clearToolOptions(scope); else updateToolUI();
             });
           }
         });
@@ -3045,12 +3203,19 @@ const state = {
       return typeof XLSX !== 'undefined' && XLSX && XLSX.utils && XLSX.write;
     }
 
-    // Excel sheet names: max 31 chars, no : \ / ? * [ ]. Sanitize tab ids.
+    // Excel sheet names: max 31 chars, no : \ / ? * [ ]. Sanitize tab ids / blueprint names.
+    // Excel enforces sheet-name uniqueness CASE-INSENSITIVELY, so two blueprints named e.g.
+    // "Farm" and "farm" would both pass a case-sensitive dedupe, land as distinct sheets in
+    // the XML, and make Excel report the .xlsx as corrupt (forced repair, a sheet dropped) on
+    // open. Dedupe on the lowercased name so the collision is disambiguated ("Farm", "farm_2"),
+    // while returning the original casing. `used` holds lowercased keys; callers pass a fresh
+    // Set per export. Names already unique case-insensitively (incl. the fixed tab ids) return
+    // byte-unchanged.
     function safeSheetName(name, used) {
       let s = String(name || 'Sheet').replace(/[:\\\/?*\[\]]/g, '_').slice(0, 31) || 'Sheet';
       let base = s, i = 2;
-      while (used.has(s)) { s = (base.slice(0, 28) + '_' + i).slice(0, 31); i++; }
-      used.add(s);
+      while (used.has(s.toLowerCase())) { s = (base.slice(0, 28) + '_' + i).slice(0, 31); i++; }
+      used.add(s.toLowerCase());
       return s;
     }
     // Strip characters that are invalid in download filenames on Windows/macOS/Linux.
@@ -3165,14 +3330,18 @@ const state = {
       return ws;
     }
 
-    // Styled worksheet for ONE tab (single scope). Mirrors tabToXlsxAOA layout:
-    // modeline header, Z-layers stacked with "#>", preserve-vs-trim behaviour.
+    // Styled worksheet for ONE tab (single scope). Mirrors tabToMultiZCSV's
+    // layout AND its export-option handling (area expansion / bare priorities /
+    // container shorthand / additive tracks / trim margins): both read the same
+    // `state.export*` toggles and the same transformMatrixForExport, so the .xlsx
+    // and CSV exports of the same tab agree, and so this sheet is byte-consistent
+    // with the same options applied to the whole-workbook .xlsx path (which already
+    // ran every layer through transformMatrixForExport).
     function tabToStyledWorksheet(tabId) {
       ensureGrids();
       const tab = Tabs.find(t => t.id === tabId) || Tabs[0];
       const n = state.zCount;
       const rows = [];
-      rows.push({ meta: true, text: buildModelineText(tabId) });
 
       function isEmptyLayer(zDisp) {
         const mat = getMatrix(tabId, zDisp);
@@ -3188,10 +3357,15 @@ const state = {
 
       if (state.preserveZOrder) {
         const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex | 0));
+        const mats = [];
+        for (let z = 0; z < n; z++) mats.push(transformMatrixForExport(getMatrix(tabId, z), tabId, true));
+        const crop = state.exportTrimMargins ? uniformExportCrop(mats) : null;
+        const shift = crop ? { left: crop.cMin, top: crop.rMin } : null;
+        rows.push({ meta: true, text: buildModelineText(tabId, undefined, shift) });
         rows.push({ meta: true, text: `#0${origin}` });
         for (let z = 0; z < n; z++) {
           if (z > 0) rows.push({ meta: true, text: '#>' });
-          pushMatrix(getMatrix(tabId, z));
+          pushMatrix(crop ? cropMatrixToBounds(mats[z], crop) : mats[z]);
         }
       } else {
         let low = 0, high = n - 1;
@@ -3199,12 +3373,18 @@ const state = {
         while (low <= high && isEmptyLayer(low)) low++;
         if (low > high) {
           const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex | 0));
-          pushMatrix(getMatrix(tabId, origin));
+          rows.push({ meta: true, text: buildModelineText(tabId) });
+          pushMatrix(transformMatrixForExport(getMatrix(tabId, origin), tabId));
         } else {
           // Skip empty interior floors; collapse them into a single "#>N"
           // control row (mirrors tabToMultiZCSV; equivalent on Quickfort
           // re-import, just shorter). No empty interior floors -> every step is
           // 1 ("#>"), so existing output is unchanged.
+          const mats = [];
+          for (let z = low; z <= high; z++) mats.push(transformMatrixForExport(getMatrix(tabId, z), tabId, true));
+          const crop = state.exportTrimMargins ? uniformExportCrop(mats) : null;
+          const shift = crop ? { left: crop.cMin, top: crop.rMin } : null;
+          rows.push({ meta: true, text: buildModelineText(tabId, undefined, shift) });
           let prevZ = null;
           for (let z = low; z <= high; z++) {
             if (isEmptyLayer(z)) continue;
@@ -3212,7 +3392,8 @@ const state = {
               const step = z - prevZ;
               rows.push({ meta: true, text: step > 1 ? `#>${step}` : '#>' });
             }
-            pushMatrix(getMatrix(tabId, z));
+            const mat = mats[z - low];
+            pushMatrix(crop ? cropMatrixToBounds(mat, crop) : mat);
             prevZ = z;
           }
         }
@@ -3258,7 +3439,7 @@ const state = {
         for (let z = 0; z < n; z++) mats.push(transformMatrixForExport(matAt(bp.grids, tab.id, z), tab.id, true));
         const crop = state.exportTrimMargins ? uniformExportCrop(mats) : null;
         const shift = crop ? { left: crop.cMin, top: crop.rMin } : null;
-        rows.push({ meta: true, text: buildModelineText(tab.id, bp.modeline && bp.modeline[tab.id], shift) });
+        rows.push({ meta: true, text: buildModelineText(tab.id, (bp.modeline && bp.modeline[tab.id]) || null, shift) });
         rows.push({ meta: true, text: `#0${origin}` });
         for (let z = 0; z < n; z++) {
           if (z > 0) rows.push({ meta: true, text: '#>' });
@@ -3266,6 +3447,21 @@ const state = {
         }
       });
       if (firstSection) rows.push({ meta: true, text: '#dig' });
+      // Emit this blueprint's own #notes / #meta sections so they survive the .xlsx
+      // workbook round-trip, exactly as blueprintSnapshotToCSV does for the CSV bundle.
+      // Lines go in RAW (one per meta cell): styledWorksheetFromRows writes a meta row to
+      // col A verbatim, and the importer re-encodes it via matrixRowsToCSVLines (which
+      // quotes commas) before parseCSV decodes, so a comma-bearing note round-trips.
+      const notesLines = sectionRawLines(bp.notesText);
+      if (notesLines.length) {
+        rows.push({ meta: true, text: '#notes' });
+        notesLines.forEach(l => rows.push({ meta: true, text: l }));
+      }
+      const metaLines = sectionRawLines(bp.metaText);
+      if (metaLines.length) {
+        rows.push({ meta: true, text: '#meta' });
+        metaLines.forEach(l => rows.push({ meta: true, text: l }));
+      }
       return styledWorksheetFromRows(rows);
     }
 
@@ -3362,8 +3558,8 @@ const state = {
     // Load a blueprint snapshot into the live editor state and re-render.
     function loadBlueprintIntoState(bp) {
       if (!bp) return;
-      state.cols = bp.cols;
-      state.rows = bp.rows;
+      state.cols = Math.max(1, Math.min(300, parseInt(bp.cols, 10) || 1));
+      state.rows = Math.max(1, Math.min(300, parseInt(bp.rows, 10) || 1));
       state.zCount = Math.max(1, bp.zCount | 0);
       state.zeroIndex = bp.zeroIndex | 0;
       state.grids = cloneGrids(bp.grids);
@@ -3395,6 +3591,8 @@ const state = {
       updateToolUI(); // sync tool-button highlight with this blueprint's selection (clear stale highlight)
       updateZLabel();
       renderGrid();
+      refreshCountsModalIfOpen(); // an open Tile-counts modal must drop the old blueprint's frozen tally, not just the selection
+      refreshBlueprintMenuIfOpen(); // an open Blueprint menu must resync too, or its fields keep showing the old blueprint while writing into the new one
     }
 
     // ----------------------------------------------------------------------
@@ -3602,29 +3800,46 @@ const state = {
       const sel = document.getElementById('paste-bp-select');
       const btn = document.getElementById('paste-bp-btn');
       if (!sel) return;
-      const prev = sel.value;
+      const prevIdx = parseInt(sel.value, 10);
+      const prevBp = !isNaN(prevIdx) ? Workbook.blueprints[prevIdx] : null;
+      const zSel = document.getElementById('paste-bp-z');
+      const prevZ = zSel ? parseInt(zSel.value, 10) : NaN; // user's current floor pick, kept if the source doesn't change
       sel.innerHTML = '';
       let count = 0;
+      let matchIdx = -1;
       Workbook.blueprints.forEach((bp, i) => {
         if (i === Workbook.activeIndex) return; // skip self
         const o = document.createElement('option');
         o.value = String(i);
         o.textContent = (bp.name || `Blueprint ${i+1}`);
         sel.appendChild(o);
+        if (bp === prevBp) matchIdx = i;
         count++;
       });
-      // Restore the previous choice if it still exists.
-      if (prev && sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
+      // Restore the previous choice by blueprint IDENTITY, not its old raw index:
+      // duplicating / inserting a blueprint shifts every later index, so matching
+      // on the numeric value alone could silently re-select a DIFFERENT blueprint
+      // that now happens to occupy the same slot.
+      if (matchIdx >= 0) sel.value = String(matchIdx);
       if (btn) btn.disabled = count === 0;
       sel.disabled = count === 0;
-      // Populate the floor picker for whichever source is now selected.
+      // Populate the floor picker for whichever source is now selected. Any
+      // OTHER blueprint-bar change (add/duplicate/rename/move/delete/switch)
+      // also runs this same render, so pass the previous floor through and
+      // only fall back to the default origin floor when the source blueprint
+      // itself actually changed (matchIdx < 0, or there was no prior source):
+      // otherwise a manually-picked non-default floor would silently revert
+      // right before the user clicks "Paste Blueprint".
       const si = parseInt(sel.value, 10);
-      refreshPasteBlueprintZPicker(!isNaN(si) ? Workbook.blueprints[si] : null);
+      const sameSource = matchIdx >= 0 && si === matchIdx;
+      refreshPasteBlueprintZPicker(!isNaN(si) ? Workbook.blueprints[si] : null, sameSource ? prevZ : NaN);
     }
 
     // Populate the paste-bp-z select with the Z-levels of the given source blueprint.
     // Display index 0 = top; labels use the source's own zeroIndex for Z0/+/-N notation.
-    function refreshPasteBlueprintZPicker(src) {
+    // keepZ (display index), when a valid slot for this source, preserves a
+    // manually-chosen floor across a rebuild instead of resetting to the default.
+    function refreshPasteBlueprintZPicker(src, keepZ) {
       const zSel = document.getElementById('paste-bp-z');
       if (!zSel) return;
       zSel.innerHTML = '';
@@ -3639,7 +3854,7 @@ const state = {
         o.textContent = lbl;
         zSel.appendChild(o);
       }
-      zSel.value = String(zi); // default to the origin floor
+      zSel.value = String((Number.isInteger(keepZ) && keepZ >= 0 && keepZ < n) ? keepZ : zi);
       zSel.disabled = n <= 1;
     }
 
@@ -3697,10 +3912,18 @@ const state = {
       };
     }
 
-    // Generate a non-colliding default name like "Blueprint 3".
+    // Generate a non-colliding name. With a base, increments a suffix on the base itself
+    // ("Room copy" -> "Room copy 2"); only falls back to a generic "Blueprint N" when
+    // no base was given at all.
     function uniqueBlueprintName(base) {
       const names = new Set(Workbook.blueprints.map(b => b.name));
       if (base && !names.has(base)) return base;
+      if (base) {
+        let i = 2;
+        let candidate = `${base} ${i}`;
+        while (names.has(candidate)) { i++; candidate = `${base} ${i}`; }
+        return candidate;
+      }
       let i = Workbook.blueprints.length + 1;
       let candidate = `Blueprint ${i}`;
       while (names.has(candidate)) { i++; candidate = `Blueprint ${i}`; }
@@ -3735,7 +3958,7 @@ const state = {
     // goal. Reads state only; existing blueprints are untouched.
     function newBlueprintFromSelection() {
       const rect = state.selectionRect;
-      if (!rect) return;
+      if (!rect || rect.tab !== state.activeTab || rect.z !== state.activeZ) return;
       const z = rect.z;
       const probe = getMatrix(rect.tab, z);
       if (!probe || !probe.length) return;
@@ -3941,8 +4164,9 @@ const state = {
     // This keeps stockpile/zone semantics: a solid rectangle is the same single
     // entity whether written freeform or as (WxH), while non-rectangular regions
     // (L-shapes etc.) are left untouched so they don't get split into pieces.
-    function collapseRectangles(mat) {
+    function collapseRectangles(mat, tabId) {
       if (!mat || !mat.length) return mat;
+      const tabIsDig = tabId === 'dig';
       const R = mat.length, C = mat[0].length;
       const out = mat.map(r => r.slice());
       const seen = Array.from({ length: R }, () => new Array(C).fill(false));
@@ -3961,7 +4185,13 @@ const state = {
           for (const [nr, ncc] of nb) if (inb(nr, ncc) && !seen[nr][ncc] && out[nr][ncc] === tok) { seen[nr][ncc] = true; stack.push([nr, ncc]); }
         }
         const w = maxC - minC + 1, h = maxR - minR + 1;
-        if (comp.length > 1 && comp.length === w * h) {
+        // A solid generic-`T` (carve track) block with BOTH dims > 1 must NOT collapse
+        // to `T(WxH)`: the #dig importer reads that exact form as an L-shaped carved-track
+        // CORNER (two arms only, ~line 8134), not a solid fill, so a collapsed 3x3 block
+        // would re-import as an L of 5 cells. Straight `T(Nx1)`/`T(1xN)` runs stay
+        // collapsible (the importer expands a one-wide `T(WxH)` as a solid line).
+        const digTrackCorner = tabIsDig && tok === 'T' && w > 1 && h > 1;
+        if (comp.length > 1 && comp.length === w * h && !digTrackCorner) {
           for (const [cr, cc] of comp) out[cr][cc] = '';
           out[minR][minC] = `${tok}(${w}x${h})`;
         }
@@ -4138,7 +4368,7 @@ const state = {
       if (state.exportBarePriorities && tabId === 'dig') m = bareDigPriorities(m);
       if (state.exportAdditiveTracks && tabId === 'dig') m = additiveTracks(m);
       if (state.exportContainerShorthand && tabId === 'place') m = containerShorthand(m);
-      if (state.exportAreaExpand) m = collapseRectangles(m);
+      if (state.exportAreaExpand) m = collapseRectangles(m, tabId);
       if (state.exportTrimMargins && !skipTrim) m = trimMatrixMargins(m);
       return m;
     }
@@ -4155,7 +4385,11 @@ const state = {
     }
     // Assemble the section header line for export: the bare "#dig" plus any markers.
     // Empty markers reproduce today's header exactly, so output is unchanged unless set.
-    // Pass an explicit marker object (e.g. a saved blueprint's) or omit to use live state.
+    // Pass an explicit marker object (e.g. a saved blueprint's), pass null when that
+    // blueprint's tab has none (do NOT pass undefined for this: undefined means
+    // "read the live active state.modeline", so a snapshot's missing key would
+    // otherwise silently leak the ACTIVE blueprint's markers into this one's export),
+    // or omit the argument entirely to read live state.
     // startShift {left,top}, when set, shifts the emitted start() by the export crop offset
     // (see uniformExportCrop) so a trimmed blueprint still anchors on the right tile. Coords
     // clamp to 1 (a start tile that sat in a trimmed margin still yields a legal coord). Omit
@@ -4244,6 +4478,17 @@ const state = {
       const ms = document.getElementById('meta-script'); if (ms) ms.value = state.metaText || '';
       syncMetaRefLabels();
     }
+    // Re-sync the Blueprint menu's modeline/notes/meta fields only if it is
+    // currently open. The menu normally syncs once, on open (see wireTopMenus),
+    // but a blueprint switch can also happen while it stays open (Ctrl/Cmd+PageUp
+    // Down, or a command-palette blueprint action), which does not close the menu.
+    // Without this, the fields keep showing the OUTGOING blueprint's values while
+    // typing into them writes straight into the NEW active blueprint's state,
+    // silently corrupting the wrong blueprint's modeline/notes/meta.
+    function refreshBlueprintMenuIfOpen() {
+      const menu = document.getElementById('blueprint-menu');
+      if (menu && !menu.classList.contains('hidden')) syncModelineUI();
+    }
 
     // Populate the #meta "Reference" dropdown from the labels the user set in the
     // per-tab modeline markers (state.modeline[tab].label). #meta references address
@@ -4322,16 +4567,23 @@ const state = {
       return /[",\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
     }
 
+    // Split a #notes / #meta textarea value into its emittable lines: strip carriage
+    // returns and drop blank lines. Shared by the CSV emitters (which then csvQuoteLine
+    // each line) and the .xlsx exporter (which writes each line raw into a meta cell),
+    // so the three section emitters never drift on what counts as a line.
+    function sectionRawLines(text) {
+      return String(text ?? '').split('\n')
+        .map(l => l.replace(/\r/g, ''))
+        .filter(l => l.trim());
+    }
+
     // Append a Quickfort #notes section to a CSV string when blueprint notes are set.
     // Each non-empty line becomes one message line in the section. `notesText` defaults
     // to the active blueprint's notes, but a snapshot's notes can be passed so the
     // workbook-CSV bundle carries each blueprint's own notes.
     function appendNotesSection(csv, notesText = state.notesText) {
       if (!notesText || !notesText.trim()) return csv;
-      const noteLines = notesText.split('\n')
-        .map(l => l.replace(/\r/g, ''))
-        .filter(l => l.trim())
-        .map(csvQuoteLine);
+      const noteLines = sectionRawLines(notesText).map(csvQuoteLine);
       if (!noteLines.length) return csv;
       return csv + '\n#notes\n' + noteLines.join('\n');
     }
@@ -4343,10 +4595,7 @@ const state = {
     // passed so the workbook-CSV bundle carries each blueprint's own meta block.
     function buildMetaBlock(metaText = state.metaText) {
       if (!metaText || !metaText.trim()) return '';
-      const metaLines = metaText.split('\n')
-        .map(l => l.replace(/\r/g, ''))
-        .filter(l => l.trim())
-        .map(csvQuoteLine);
+      const metaLines = sectionRawLines(metaText).map(csvQuoteLine);
       if (!metaLines.length) return '';
       return '\n\n#meta\n' + metaLines.join('\n');
     }
@@ -4405,7 +4654,7 @@ const state = {
         for (let z = 0; z < n; z++) mats.push(transformMatrixForExport(matAt(tab.id, z), tab.id, true));
         const crop = state.exportTrimMargins ? uniformExportCrop(mats) : null;
         const shift = crop ? { left: crop.cMin, top: crop.rMin } : null;
-        lines.push(buildModelineText(tab.id, bp.modeline && bp.modeline[tab.id], shift));
+        lines.push(buildModelineText(tab.id, (bp.modeline && bp.modeline[tab.id]) || null, shift));
         lines.push(`#0${origin}`);
         for (let z = 0; z < n; z++) {
           if (z > 0) lines.push('#>');
@@ -4512,51 +4761,6 @@ const state = {
         }
         return includeNotes ? appendNotesSection(lines.join('\n')) : lines.join('\n');
       }
-    }
-
-    // Build a one-off trimmed CSV for the current tab (Quickfort-friendly)
-    function tabToMultiZCSVTrimmed(tabId) {
-      ensureGrids();
-      const tab = Tabs.find(t => t.id === tabId) || Tabs[0];
-      const lines = [];
-      const n = state.zCount;
-      function isEmptyLayer(zDisp) {
-        const mat = getMatrix(tabId, zDisp);
-        if (!mat) return true;
-        for (let r = 0; r < mat.length; r++) {
-          for (let c = 0; c < mat[0].length; c++) {
-            if (mat[r][c]) return false;
-          }
-        }
-        return true;
-      }
-      let low = 0, high = n - 1;
-      while (low <= high && isEmptyLayer(high)) high--; // trim bottom
-      while (low <= high && isEmptyLayer(low)) low++;   // trim top
-      if (low > high) {
-        // All layers empty: export a single origin layer if possible, else top
-        lines.push(buildModelineText(tabId));
-        const origin = Math.max(0, Math.min(state.zCount - 1, state.zeroIndex|0));
-        const mat = getMatrix(tabId, origin);
-        const rows = matrixRowsToCSVLines(transformMatrixForExport(mat, tabId));
-        for (const r of rows) lines.push(r);
-        return lines.join('\n');
-      }
-      // Transform every emitted floor first (skip per-layer trim), crop them to one union
-      // rectangle so floors stay column-aligned, and shift start() by that offset.
-      const mats = [];
-      for (let z = low; z <= high; z++) mats.push(transformMatrixForExport(getMatrix(tabId, z), tabId, true));
-      const crop = state.exportTrimMargins ? uniformExportCrop(mats) : null;
-      const shift = crop ? { left: crop.cMin, top: crop.rMin } : null;
-      lines.push(buildModelineText(tabId, undefined, shift));
-      let first = true;
-      for (let i = 0; i < mats.length; i++) {
-        if (!first) lines.push('#>');
-        const rows = matrixRowsToCSVLines(crop ? cropMatrixToBounds(mats[i], crop) : mats[i]);
-        for (const r of rows) lines.push(r);
-        first = false;
-      }
-      return lines.join('\n');
     }
 
     // --- Z-level UI helpers ---
@@ -4874,8 +5078,7 @@ const state = {
         'Constructed Tracks':'#43aa8b',
         'Mechanical Power':'#4cc9f0'
       },
-      burrow: { a:'#2b9348', e:'#d90429' },
-      query: { 'q':'#ff9500' }
+      burrow: { a:'#2b9348', e:'#d90429' }
     });
 
     // Live maps the rest of the app reads. Populated from defaults + overrides.
@@ -4883,9 +5086,8 @@ const state = {
     const COLOR_PLACE = {};
     const COLOR_ZONE = {};
     const COLOR_BUILD_GROUP = {};
-    // Burrow/query are tiny (used directly in several helpers); keep live maps too.
+    // Burrow is tiny (used directly in several helpers); keep a live map too.
     const COLOR_BURROW = {};
-    const COLOR_QUERY = {};
 
     // Individual colors for Furniture tokens (one swatch per token, palette-cycled
     // by default; each can be overridden). FURNITURE_TOKEN_COLOR is rebuilt from
@@ -4901,14 +5103,14 @@ const state = {
     const Colors = {
       LS_KEY: 'qf_colors_overrides_v1',
       // overrides: { dig:{key:hex}, place:{...}, zone:{...}, buildGroup:{name:hex},
-      //              burrow:{key:hex}, query:{q:hex}, furniture:{base:hex} }
-      overrides: { dig:{}, place:{}, zone:{}, buildGroup:{}, burrow:{}, query:{}, furniture:{} },
+      //              burrow:{key:hex}, furniture:{base:hex} }
+      overrides: { dig:{}, place:{}, zone:{}, buildGroup:{}, burrow:{}, furniture:{} },
       load() {
         try {
           const raw = localStorage.getItem(this.LS_KEY);
           if (raw) {
             const parsed = JSON.parse(raw);
-            ['dig','place','zone','buildGroup','burrow','query','furniture'].forEach(k => {
+            ['dig','place','zone','buildGroup','burrow','furniture'].forEach(k => {
               if (parsed && parsed[k] && typeof parsed[k] === 'object') {
                 this.overrides[k] = Object.assign({}, parsed[k]);
               }
@@ -4936,7 +5138,7 @@ const state = {
         this.save(); rebuildColors(); refreshAfterColorChange();
       },
       resetAll() {
-        this.overrides = { dig:{}, place:{}, zone:{}, buildGroup:{}, burrow:{}, query:{}, furniture:{} };
+        this.overrides = { dig:{}, place:{}, zone:{}, buildGroup:{}, burrow:{}, furniture:{} };
         this.save(); rebuildColors(); refreshAfterColorChange();
       },
       // Current effective colour for an entry (override or default).
@@ -4984,7 +5186,6 @@ const state = {
       merge(COLOR_ZONE, 'zone');
       merge(COLOR_BUILD_GROUP, 'buildGroup');
       merge(COLOR_BURROW, 'burrow');
-      merge(COLOR_QUERY, 'query');
     }
 
     // Full rebuild including furniture per-token colours. Furniture depends on
@@ -5227,6 +5428,14 @@ const state = {
         meta.textContent = `${tab} · ${total} tile${total === 1 ? '' : 's'} · ${types} type${types === 1 ? '' : 's'} · ${scope}`;
       }
     }
+    // The modal has no live binding to grid content, so a paint stroke, undo/redo, or a
+    // selection move (Shift+Arrow) made while it stays open left its tally frozen at the
+    // pre-change count. Called from the same choke points that already refresh the other
+    // post-change indicators (updateTabIndicators, updateLayerContentDots).
+    function refreshCountsModalIfOpen() {
+      const m = document.getElementById('counts-modal');
+      if (m && !m.classList.contains('hidden')) renderCountsModal();
+    }
 
     // Tile counts modal: open it, defaulting to the active selection's scope when one exists.
     function openCountsModal() {
@@ -5291,7 +5500,14 @@ const state = {
         const n = replaceTokensOnLayer(state.activeTab, z, findTok, withTok);
         if (n) { total += n; floors++; }
       }
-      if (total) renderGrid();
+      if (total) {
+        renderGrid();
+        // renderGrid refreshes only the ACTIVE floor's Z-panel thumbnail (via
+        // updateLayerContentDots). An all-Z replace also mutates the OTHER floors, so
+        // rebuild the whole layer list to refresh their thumbnails too (matching how the
+        // structural row/col ops refresh every floor's preview via updateZLabel).
+        renderLayers();
+      }
       return { total, floors };
     }
     function openReplaceModal() {
@@ -5385,6 +5601,14 @@ const state = {
       if (colorsResetAll) colorsResetAll.addEventListener('click', () => { Colors.resetAll(); buildColorModal(); });
       const colorsBackdrop = document.getElementById('colors-modal');
       if (colorsBackdrop) colorsBackdrop.addEventListener('click', (e) => { if (e.target === colorsBackdrop) closeColorModal(); });
+      // Esc closes the Customize colours modal when it is open (mirrors the Tile
+      // counts / Find & replace / CSV preview modals: without this, Esc fell through
+      // to the grid's own Esc handler and cancelled a drag/paste/selection instead).
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        const m = document.getElementById('colors-modal');
+        if (m && !m.classList.contains('hidden')) { e.stopPropagation(); closeColorModal(); }
+      }, true);
 
       // Colorblind-safe mode toggle (Okabe-Ito palette: body.cb-safe)
       const cbToggleBtn = document.getElementById('cb-toggle');
@@ -5644,7 +5868,7 @@ const state = {
     function stripPropsAndCfg(token) {
       if (!token) return '';
       let s = String(token);
-      s = s.replace(/\{[^}]*\}/g, ''); // remove {...}
+      s = s.replace(/\{(?:"(?:[^"\\]|\\.)*"|[^}])*\}/g, ''); // remove {...} (quote-aware: a value may contain a literal '}')
       s = s.replace(/:.*$/, ''); // remove :config (any op: = - +), braces already gone
       // remove trailing extent like (3x3)
       s = s.replace(/\(\s*\d+\s*x\s*\d+\s*\)\s*$/, '');
@@ -5798,9 +6022,6 @@ const state = {
       if (scopeId === 'build') {
         return getBuildColorForToken(stripPropsAndCfg(s));
       }
-      if (scopeId === 'query') {
-        return COLOR_QUERY.q || '#ff9500';
-      }
       return null;
     }
 
@@ -5829,9 +6050,6 @@ const state = {
       if (tabId === 'build') {
         // One swatch per build group (groups share a colour, except Furniture).
         return Object.keys(COLOR_BUILD_GROUP).map(g => ['__group__'+g, g]);
-      }
-      if (tabId === 'query') {
-        return [['q:settings','query']];
       }
       return [];
     }
@@ -6036,16 +6254,16 @@ const state = {
         if (!col) return;
         td.style.background = col; ensureReadableText(td, col); return;
       }
-      if (scopeId === 'query') {
-        const col = COLOR_QUERY.q || '#ff9500';
-        td.style.background = col; ensureReadableText(td, col);
-        return;
-      }
     }
 
     // CSV import helpers
     function parseCSV(text) {
-      const norm = (text||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+      // A trailing "\n" is just the last line's terminator, not a signal that a further
+      // (blank) line follows, so strip exactly one before splitting: without this, the
+      // char-by-char loop below always appends one final empty field/row once it reaches
+      // end-of-input, turning "a,b\nc,d\n" into 3 rows instead of 2. Two trailing newlines
+      // still parse as one genuine blank last line, as intended.
+      const norm = (text||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/\n$/, '');
       const rows = [];
       let field = '';
       let inQuotes = false;
@@ -6106,9 +6324,37 @@ const state = {
       return m ? `#${m[1].toLowerCase()}` : null;
     }
 
+    // Quote-aware line splitter: a '\n' inside a quoted CSV field is literal field
+    // content, not a row boundary (spec: message(text) "supports embedded newlines,
+    // quote the cell", and #notes is multi-line text). A plain String.split('\n')
+    // tears such a row in two before parseCSV/firstCSVCell (both already quote-aware)
+    // ever see the whole thing, silently truncating a message()/note and leaving the
+    // remainder of the quoted text as a bogus extra grid row. Byte-identical to
+    // split('\n') for text with no cross-newline quoted field (the entire existing
+    // corpus, since this editor's own export never emits one).
+    function splitLogicalRows(text) {
+      const rows = [];
+      let cur = '';
+      let inQuotes = false;
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (inQuotes) {
+          cur += ch;
+          if (ch === '"') {
+            if (text[i + 1] === '"') { cur += '"'; i++; }
+            else inQuotes = false;
+          }
+        } else if (ch === '"') { inQuotes = true; cur += ch; }
+        else if (ch === '\n') { rows.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      rows.push(cur);
+      return rows;
+    }
+
     function splitSheetsFromText(text) {
       const norm = (text||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
-      const lines = norm.split('\n');
+      const lines = splitLogicalRows(norm);
       const sheets = [];
       let i = 0;
       while (i < lines.length) {
@@ -6192,6 +6438,7 @@ const state = {
     // Keyboard shortcuts for zoom + Ctrl/Cmd+S = download workbook project
     document.addEventListener('keydown', (e) => {
       if (!e.ctrlKey && !e.metaKey) return;
+      if (isAnyModalOpen()) return; // don't zoom or save behind an open modal/palette
       if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomIn(); }
       else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomOut(); }
       else if (e.key === '0') { e.preventDefault(); resetZoom(); }
@@ -6367,6 +6614,7 @@ const state = {
       }
       updateZLabel();
       renderGrid();
+      refreshCountsModalIfOpen(); // a "Selection only" tally scoped to the old Z-level is now stale/invalid
     }
     // Buttons extend at bounds; scroll only navigates
     zUpBtn?.addEventListener('click', () => { clampActiveZ(); navigateZ(-1); });
@@ -6396,7 +6644,9 @@ const state = {
       if (state.activeZ >= state.zCount) state.activeZ = state.zCount - 1;
       clampZeroIndex();
       updateZLabel();
+      updateTabIndicators(); // the deleted floor may have been a tab's only content
       renderGrid();
+      refreshCountsModalIfOpen(); // deleted floor's tiles must drop out of an open tally
     }
     // Duplicate the active Z-level: insert an exact copy (all tabs) directly above the
     // current floor, then keep the view on the duplicate. The original shifts one level
@@ -6421,6 +6671,7 @@ const state = {
       clampZeroIndex();
       updateZLabel();
       renderGrid();
+      refreshCountsModalIfOpen(); // duplicated floor's tiles must join an open all-Z tally
     }
 
     // Reorder the active Z-level: swap its contents (across ALL tabs) with the adjacent
@@ -6450,6 +6701,7 @@ const state = {
       state.activeZ = dispB; // follow the moved floor
       updateZLabel();
       renderGrid();
+      refreshCountsModalIfOpen(); // a "selection only" tally at a swapped Z-index now sees different content
     }
 
     // ===== Structural row / column insert & delete =====
@@ -6490,6 +6742,25 @@ const state = {
       });
       if (typeof syncModelineUI === 'function') syncModelineUI();
     }
+    // Keep a live mirror axis (V for col inserts/deletes, H for row) pointing at the same
+    // physical boundary after a structural change, the same reason shiftStartMarkers exists.
+    // Without this, inserting/deleting columns/rows before the axis silently leaves
+    // mirrorVIndex/mirrorHIndex pointing at the OLD column/row number: every mirrored paint
+    // after that keeps echoing around the wrong boundary instead of the symmetric structure
+    // the user actually built. The axis can sit at a half-cell boundary (drag-snapped), so
+    // shift by the raw delta rather than rounding to whole cells; clampAxes (already called
+    // right after this by afterStructuralResize) keeps it in bounds.
+    function shiftMirrorAxis(axis, at, delta) {
+      const key = axis === 'row' ? 'mirrorHIndex' : 'mirrorVIndex';
+      const idx = Number(state[key]) || 0;
+      if (delta > 0) {
+        if (idx >= at) state[key] = idx + delta;
+      } else {
+        const removed = -delta;
+        if (idx >= at + removed) state[key] = idx + delta;      // past the band: shift back
+        else if (idx > at) state[key] = at;                     // inside the removed band: pin to its start
+      }
+    }
     function afterStructuralResize() {
       clampAxes();
       const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(state.cols);
@@ -6498,6 +6769,8 @@ const state = {
       resetAllPaintHistory();
       clearSelection(); // coordinates shifted, drop the now-stale selection rect
       renderGrid();
+      updateZLabel(); // every floor's content moved: rebuild the Z-panel thumbnails
+      updateTabIndicators(); // a deleted/trimmed band can remove a tab's last content
     }
     function insertRows(at, count) {
       count = Math.max(1, count|0);
@@ -6510,17 +6783,25 @@ const state = {
       }));
       state.rows += count;
       shiftStartMarkers('row', at, count);
+      shiftMirrorAxis('row', at, count);
       afterStructuralResize();
     }
-    function deleteRows(at, count) {
+    // Shared by deleteRows/deleteCols AND their selection-band callers, so the confirm dialog
+    // (built from the same count BEFORE this clamp) always promises exactly what gets deleted.
+    function clampDeleteBandCount(total, at, count) {
       count = Math.max(1, count|0);
+      count = Math.min(count, total - at);
+      if (total - count < 1) count = total - 1; // never delete the last remaining row/col
+      return count;
+    }
+    function deleteRows(at, count) {
       at = Math.max(0, Math.min(at|0, state.rows - 1));
-      count = Math.min(count, state.rows - at);
-      if (state.rows - count < 1) count = state.rows - 1; // never delete the last remaining row
+      count = clampDeleteBandCount(state.rows, at, count);
       if (count <= 0) return;
       Tabs.forEach(t => (state.grids[t.id] || []).forEach(mat => mat.splice(at, count)));
       state.rows -= count;
       shiftStartMarkers('row', at, -count);
+      shiftMirrorAxis('row', at, -count);
       afterStructuralResize();
     }
     function insertCols(at, count) {
@@ -6534,17 +6815,17 @@ const state = {
       })));
       state.cols += count;
       shiftStartMarkers('col', at, count);
+      shiftMirrorAxis('col', at, count);
       afterStructuralResize();
     }
     function deleteCols(at, count) {
-      count = Math.max(1, count|0);
       at = Math.max(0, Math.min(at|0, state.cols - 1));
-      count = Math.min(count, state.cols - at);
-      if (state.cols - count < 1) count = state.cols - 1; // never delete the last remaining col
+      count = clampDeleteBandCount(state.cols, at, count);
       if (count <= 0) return;
       Tabs.forEach(t => (state.grids[t.id] || []).forEach(mat => mat.forEach(row => row.splice(at, count))));
       state.cols -= count;
       shiftStartMarkers('col', at, -count);
+      shiftMirrorAxis('col', at, -count);
       afterStructuralResize();
     }
     // Selection-driven wrappers: the active selection picks WHICH rows/cols. Insert adds as many
@@ -6594,9 +6875,19 @@ const state = {
         (n === 1 ? '' : 's') + ' across all tabs and Z-levels and cannot be undone.');
     }
     function insertRowsAtSelection() { const b = selectionRowBand(); if (b) insertRows(b.at, b.count); }
-    function deleteRowsAtSelection() { const b = selectionRowBand(); if (b && confirmStructuralDelete('row', b.at, b.count)) deleteRows(b.at, b.count); }
+    function deleteRowsAtSelection() {
+      const b = selectionRowBand();
+      if (!b) return;
+      const count = clampDeleteBandCount(state.rows, b.at, b.count); // match what deleteRows will actually remove
+      if (confirmStructuralDelete('row', b.at, count)) deleteRows(b.at, count);
+    }
     function insertColsAtSelection() { const b = selectionColBand(); if (b) insertCols(b.at, b.count); }
-    function deleteColsAtSelection() { const b = selectionColBand(); if (b && confirmStructuralDelete('col', b.at, b.count)) deleteCols(b.at, b.count); }
+    function deleteColsAtSelection() {
+      const b = selectionColBand();
+      if (!b) return;
+      const count = clampDeleteBandCount(state.cols, b.at, b.count); // match what deleteCols will actually remove
+      if (confirmStructuralDelete('col', b.at, count)) deleteCols(b.at, count);
+    }
 
     // Bounding box of all real (non-placeholder) content across EVERY tab and z-level.
     // Returns {minR,maxR,minC,maxC} or null when the whole workbook layer is empty.
@@ -6646,6 +6937,15 @@ const state = {
       });
       if (typeof syncModelineUI === 'function') syncModelineUI();
     }
+    // Keep the live Mirror V / Mirror H axis pointing at the same physical boundary through a
+    // whole-blueprint flip, the same reason shiftMirrorAxis exists for row/col insert/delete.
+    // A left-right flip ('h') reflects every x-coordinate across the grid width, so the
+    // vertical axis (mirrorVIndex, an x-boundary) must reflect too; the horizontal axis
+    // (mirrorHIndex, a y-boundary) is untouched since 'h' never moves y. Symmetric for 'v'.
+    function flipMirrorAxis(axis) {
+      if (axis === 'h') state.mirrorVIndex = state.cols - (Number(state.mirrorVIndex) || 0);
+      else state.mirrorHIndex = state.rows - (Number(state.mirrorHIndex) || 0);
+    }
     // Flip the WHOLE active blueprint (every tab, every Z-level) in place: axis 'h' mirrors
     // left-right, 'v' mirrors top-bottom. For laying out symmetric forts (build one wing, then
     // flip a duplicate blueprint for the other). Structural op like row/col insert: it moves
@@ -6661,8 +6961,8 @@ const state = {
         for (let z = 0; z < layers.length; z++) layers[z] = applyMatTransform(layers[z], kind);
       });
       flipStartMarkers(axis);
+      flipMirrorAxis(axis);
       afterStructuralResize();
-      updateZLabel(); // every floor's content moved: rebuild the Z-panel thumbnails
     }
     // Rotate each section's modeline start() cursor onto its rotated tile. A 90-degree
     // rotation swaps the grid axes, so both coords move together and are recomputed from
@@ -6679,6 +6979,17 @@ const state = {
         else { m.startX = String(oldRows + 1 - y); m.startY = String(x); }
       });
       if (typeof syncModelineUI === 'function') syncModelineUI();
+    }
+    // Keep the live Mirror V / Mirror H axis pointing at the same physical boundary through a
+    // 90-degree rotation, same reason as flipMirrorAxis. A 90-degree turn swaps which axis is
+    // "vertical" vs "horizontal": the vertical axis (an x-boundary spanning the old height)
+    // becomes a horizontal axis after rotation, and vice versa. Uses the OLD dimensions
+    // (captured before rotateWholeBlueprint swaps state.cols/state.rows), same convention as
+    // rotateStartMarkers.
+    function rotateMirrorAxis(dir, oldRows, oldCols) {
+      const v = Number(state.mirrorVIndex) || 0, h = Number(state.mirrorHIndex) || 0;
+      if (dir === 'ccw') { state.mirrorHIndex = oldCols - v; state.mirrorVIndex = h; }
+      else { state.mirrorHIndex = v; state.mirrorVIndex = oldRows - h; }
     }
     // Rotate the WHOLE active blueprint (every tab, every Z-level) 90 degrees in place:
     // dir 'cw' clockwise, 'ccw' counter-clockwise. Companion to flipWholeBlueprint, for
@@ -6699,8 +7010,8 @@ const state = {
       });
       state.cols = oldRows; state.rows = oldCols; // axes swap on a 90-degree rotation
       rotateStartMarkers(dir, oldRows, oldCols);
+      rotateMirrorAxis(dir, oldRows, oldCols);
       afterStructuralResize();
-      updateZLabel(); // every floor's content moved: rebuild the Z-panel thumbnails
     }
 
     zAddBtn?.addEventListener('click', () => { addTopLayer(); state.activeZ = 0; updateZLabel(); renderGrid(); });
@@ -6710,12 +7021,89 @@ const state = {
     document.getElementById('z-movedn')?.addEventListener('click', () => { moveActiveLayer(1); });
 
     // Mouse wheel over grid navigates z-levels only (no auto-extend)
+    // True while a mouse-driven paint stroke, shape drag, or selection marquee is in
+    // progress. historyBegin() tags the pending undo action with the tab/Z active at
+    // mousedown, but painting itself always targets state.activeTab/state.activeZ live
+    // (so the stroke keeps drawing into whatever is on screen). Switching tab, Z-level,
+    // or blueprint mid-drag via wheel/keyboard (none of which require releasing the mouse
+    // button first) would silently keep painting into the NEW context while the pending
+    // undo entry still files under the OLD one, misattributing the change and corrupting
+    // the wrong floor on a later Undo. Block those switches until the drag's own mouseup
+    // handler resolves it (a plain UI click already resolves it first: mouseup fires
+    // before click, so button-driven switches are unaffected). Undo/Redo themselves are
+    // also guarded: they write straight to the live tab/Z bypassing state.currentAction,
+    // so firing one mid-drag would silently discard the entry it just undid/redid the
+    // next time the drag's mouseup commits, permanently losing that history.
+    function isPaintDragActive() {
+      return !!(state.painting || state.shaping || state.selecting);
+    }
+    // True while a modal dialog (Tile counts / Find & replace / CSV preview / Colour
+    // overrides) OR the command palette is open. Keyboard events are global and are not
+    // scoped to a modal the way pointer events are (the backdrop blocks clicks but not
+    // keydown), so without this guard a global single-key shortcut fires straight
+    // through onto the grid underneath whenever focus inside the open dialog isn't a
+    // text field (e.g. a button or checkbox), silently mutating the grid/tab/tool while
+    // the user's attention and clicks are on the dialog. The command palette is included
+    // for the same reason: clicking its non-input padding (or any list item) blurs its
+    // input while leaving the overlay open (it toggles `.open`, not `.hidden`, so it was
+    // missed by the original four-modal list), and every shortcut would otherwise fire
+    // through the still-open overlay onto the grid behind it.
+    const MODAL_IDS = ['counts-modal', 'replace-modal', 'csv-modal', 'colors-modal'];
+    function isAnyModalOpen() {
+      const cmdk = document.getElementById('cmdk');
+      if (cmdk && cmdk.classList.contains('open')) return true;
+      return MODAL_IDS.some(id => {
+        const m = document.getElementById(id);
+        return m && !m.classList.contains('hidden');
+      });
+    }
+    // The visible, focusable elements inside a container, in DOM order. Used to trap
+    // Tab focus inside an open modal/palette (below): a display:none ancestor makes
+    // offsetParent null, so an element hidden by a collapsed row (e.g. the Tile-counts
+    // "Selection only" checkbox when no selection exists) is correctly excluded.
+    function focusableElements(container) {
+      if (!container) return [];
+      return Array.from(container.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+      )).filter(el => el.offsetParent !== null);
+    }
+    // Keyboard Tab can move focus without a click, so it isn't stopped by the modal
+    // backdrop the way pointer events are (isAnyModalOpen only covers single-key
+    // shortcuts, which fire while focus stays put). Every modal/palette here is early
+    // in the DOM relative to the rest of the app, so Shift+Tab from a modal's first
+    // control (or a plain Tab once focus has drifted outside it) escapes straight onto
+    // a background button/input while the dialog is still open and visually blocking
+    // it, letting a stray Enter/Space fire an action behind the dialog. Traps Tab
+    // inside whichever one dialog is currently open; a no-op the rest of the time.
+    function trapModalTabFocus(e) {
+      if (e.key !== 'Tab') return;
+      const openId = MODAL_IDS.find(id => {
+        const m = document.getElementById(id);
+        return m && !m.classList.contains('hidden');
+      });
+      const cmdk = document.getElementById('cmdk');
+      const container = openId ? document.getElementById(openId)
+        : (cmdk && cmdk.classList.contains('open') ? cmdk : null);
+      if (!container) return;
+      const items = focusableElements(container);
+      if (!items.length) { e.preventDefault(); return; }
+      const first = items[0], last = items[items.length - 1];
+      const active = document.activeElement;
+      const inside = container.contains(active);
+      if (e.shiftKey) {
+        if (!inside || active === first) { e.preventDefault(); last.focus(); }
+      } else {
+        if (!inside || active === last) { e.preventDefault(); first.focus(); }
+      }
+    }
+    document.addEventListener('keydown', trapModalTabFocus);
     function navigateZNoExtend(delta) {
       const next = Math.max(0, Math.min(state.zCount - 1, state.activeZ + (delta||0)));
       if (next !== state.activeZ) {
         state.activeZ = next;
         updateZLabel();
         renderGrid();
+        refreshCountsModalIfOpen(); // a "Selection only" tally scoped to the old Z-level is now stale/invalid
       }
     }
     const onWheelZ = (e) => {
@@ -6728,6 +7116,7 @@ const state = {
         if (dy < 0) zoomIn(); else zoomOut();
         return;
       }
+      if (isPaintDragActive()) return;
       // Reverse scroll direction: wheel up moves down; wheel down moves up
       navigateZNoExtend(dy < 0 ? 1 : -1);
     };
@@ -6863,7 +7252,7 @@ const state = {
     document.addEventListener('keydown', (e) => {
       // Avoid interfering with typing in inputs/textareas/contenteditable
       const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
-      const isEditable = tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable);
+      const isEditable = tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable) || isAnyModalOpen();
       if (e.key === 'Escape') {
         // Cancel an in-progress shape drag (rect/line/circle) before it commits on
         // mouseup. The preview only toggles CSS classes (no cells are written until
@@ -6883,10 +7272,15 @@ const state = {
         clearSelection();
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+      // Ctrl/Cmd+C copies, Ctrl/Cmd+X cuts the grid selection. Guarded off in text
+      // fields/modals (like every other grid shortcut below) so the native text
+      // copy/cut still works when focus is in a sidebar input while a selection exists:
+      // without the guard, Ctrl+X in a Name/Find/notes field would preventDefault and
+      // run cutSelectedArea(), silently clearing painted grid cells instead of cutting text.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && !isEditable) {
         if (state.selectionRect) { e.preventDefault(); copySelectedArea(); }
       }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'x' || e.key === 'X')) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'x' || e.key === 'X') && !isEditable) {
         if (state.selectionRect) { e.preventDefault(); cutSelectedArea(); }
       }
       // Ctrl/Cmd+A: select the whole active grid (only when not typing in a field, so
@@ -6980,7 +7374,7 @@ const state = {
         const tabIdx = ['1','2','3','4','5'].indexOf(e.key);
         if (tabIdx !== -1 && tabIdx < Tabs.length) {
           e.preventDefault();
-          setActiveTab(Tabs[tabIdx].id);
+          if (!isPaintDragActive()) setActiveTab(Tabs[tabIdx].id);
         }
       }
       // Home: scroll to the start() cursor on the active tab (centred); falls back to
@@ -6994,7 +7388,7 @@ const state = {
       // No-modifier only; guarded off in text fields.
       if ((e.key === 'PageUp' || e.key === 'PageDown') && !isEditable && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
-        navigateZNoExtend(e.key === 'PageUp' ? -1 : 1);
+        if (!isPaintDragActive()) navigateZNoExtend(e.key === 'PageUp' ? -1 : 1);
       }
       // Ctrl/Cmd + PageUp / PageDown: switch the active blueprint (workbook tab),
       // mirroring the browser/editor tab-switching convention. Complements the
@@ -7002,7 +7396,7 @@ const state = {
       // index, so an edge press is a safe no-op. Guarded off in text fields / with Alt.
       if ((e.key === 'PageUp' || e.key === 'PageDown') && (e.ctrlKey || e.metaKey) && !e.altKey && !isEditable) {
         e.preventDefault();
-        switchBlueprint(Workbook.activeIndex + (e.key === 'PageUp' ? -1 : 1));
+        if (!isPaintDragActive()) switchBlueprint(Workbook.activeIndex + (e.key === 'PageUp' ? -1 : 1));
       }
       // N / Shift+N: navigate to the next / previous match when Highlight matches is on.
       // Shift is the only accepted modifier (for direction); Ctrl/Cmd/Alt guarded off so
@@ -7019,7 +7413,7 @@ const state = {
         }
       }
       // Undo / Redo
-      if ((e.ctrlKey || e.metaKey) && !isEditable) {
+      if ((e.ctrlKey || e.metaKey) && !isEditable && !isPaintDragActive()) {
         const k = e.key;
         if (k === 'z' || k === 'Z') {
           e.preventDefault();
@@ -7038,8 +7432,12 @@ const state = {
     const redoBtn = document.getElementById('redo-btn');
     function updateUndoRedoButtons() {
       try {
-        ensureHistory();
-        const bucket = state.history?.[state.activeTab]?.[state.activeZ];
+        // Use the canonical accessor: it applies mapZ (display->storage index) and
+        // calls ensureHistory, so the button state/counts read the SAME bucket that
+        // historyUndo/historyRedo actually mutate. Indexing history[tab][activeZ]
+        // with the raw display index diverged from mapZ on any 2+ Z-level blueprint,
+        // showing a different floor's undo/redo state than Ctrl+Z/Ctrl+Y operate on.
+        const bucket = getHistoryBucket();
         const canUndo = !!bucket && bucket.idx > 0;
         const canRedo = !!bucket && bucket.idx < bucket.entries.length;
         const nu = canUndo ? bucket.idx : 0;
@@ -7226,6 +7624,9 @@ const state = {
           getModeline(state.activeTab)[key] = el.value;
           // live-update the on-grid start() marker as coords change
           if (key === 'startX' || key === 'startY') { renderGrid(); }
+          // keep the #meta "Reference" dropdown in step: it lists label()s, so a
+          // rename while the menu stays open must not leave it pointing at the old text
+          if (key === 'label') { syncMetaRefLabels(); }
         });
         el.addEventListener('click', (e) => e.stopPropagation());
         el.addEventListener('keydown', (e) => e.stopPropagation());
@@ -7378,6 +7779,14 @@ const state = {
     }
 
     // Load CSV(s) into grids
+    // True when a parsed section carries no real content at all (every cell blank).
+    // blueprintSnapshotToCSV emits exactly this for a wholly empty blueprint: a bare
+    // header with no #0N/rows following (see there), since a real exported section is
+    // only ever emitted when its tab actually has content.
+    function sectionMatrixIsBlank(matrix) {
+      return !(matrix || []).some(row => (row || []).some(cell => String(cell ?? '').trim() !== ''));
+    }
+
     // Group the flat sheet list from splitSheetsFromText into per-blueprint groups.
     // Quickfort reads consecutive modeline blocks in one file as separate blueprints;
     // this editor bundles the dig/build/place/zone/burrow sections of ONE design as
@@ -7392,9 +7801,16 @@ const state = {
       sheets.forEach(s => {
         const id = s.header ? headerToTabId(s.header) : null;
         const isGridTab = id != null && Tabs.some(t => t.id === id);
-        if (cur === null || (isGridTab && usedTabs.has(id))) startGroup();
+        // A content-free grid section is this editor's own empty-blueprint placeholder
+        // marker (see sectionMatrixIsBlank): its tab was never really "used", so folding
+        // it into whatever group is open, or letting it hold that tab's slot open, can
+        // silently merge it into a neighbour or swallow the next real boundary. Give it
+        // its own standalone group and force the following section to start fresh too.
+        const isEmptyMarker = isGridTab && sectionMatrixIsBlank(s.matrix);
+        if (cur === null || isEmptyMarker || (isGridTab && usedTabs.has(id))) startGroup();
         cur.push(s);
-        if (isGridTab) usedTabs.add(id);
+        if (isGridTab && !isEmptyMarker) usedTabs.add(id);
+        if (isEmptyMarker) cur = null;
       });
       return groups;
     }
@@ -7412,6 +7828,9 @@ const state = {
         return sheetsToBlueprint(name || `Blueprint ${i + 1}`, g);
       });
       if (!next.length) return;
+      saveActiveIntoWorkbook(); // fold live edits in before checking for content to lose
+      if (anyBlueprintHasContent() &&
+          !window.confirm('Load this multi-blueprint CSV? This replaces the entire current workbook (all blueprints).')) return;
       Workbook.blueprints = next;
       Workbook.activeIndex = 0;
       loadBlueprintIntoState(Workbook.blueprints[0]);
@@ -7427,6 +7846,12 @@ const state = {
       // into separate workbook slots; a single blueprint uses the in-place path below.
       const groups = groupSheetsIntoBlueprints(sheets);
       if (groups.length > 1) { importMultiBlueprintCSV(groups); return; }
+      // Unlike importMultiBlueprintCSV (which replaces the whole workbook and so
+      // checks anyBlueprintHasContent()), this in-place path only overwrites the
+      // ACTIVE blueprint's tabs, so the guard is scoped the same way: does the
+      // active blueprint itself (not some other workbook slot) have content to lose.
+      if (Tabs.some(t => tabHasContent(t.id)) &&
+          !window.confirm('Load this CSV? This replaces the current blueprint\'s content.')) return;
       state.zLabels = []; // CSV has no label data; start fresh so stale labels from the prior blueprint don't persist
       // compute max dimensions (ignore control rows like #> / #< / #0N).
       // Skip non-grid sections (#notes/#ignore/#aliases/#query/#meta) so their
@@ -7452,7 +7877,17 @@ const state = {
         const id = headerToTabId(s.header);
         if (!firstTab) firstTab = id;
         importSectionToMultiZ(id, s.matrix);
-        if (id && s.modeline) state.modeline[id] = s.modeline;
+        // This tab's grid was just replaced by importSectionToMultiZ, so its modeline must
+        // track the imported section, not the prior blueprint's: set it from the CSV's
+        // markers, or CLEAR it when the section carried none (a bare `#dig` header). Without
+        // the clear branch, a stale start()/label()/message() from the old content survived
+        // and got re-emitted onto the freshly-imported grid (start() could even point
+        // out of bounds). Tabs NOT in this CSV keep their grid content, so their modeline
+        // is deliberately left untouched (unlike zLabels above, which is blueprint-global).
+        if (id) {
+          if (s.modeline) state.modeline[id] = s.modeline;
+          else delete state.modeline[id];
+        }
       });
       // Restore #notes content (replace whatever was in the textarea)
       const notesSheet = sheets.find(s => s.header === '#notes');
@@ -7464,6 +7899,13 @@ const state = {
       state.metaText = metaSheet ? sectionTextLines(metaSheet.matrix) : '';
       const metaScriptEl = document.getElementById('meta-script');
       if (metaScriptEl) metaScriptEl.value = state.metaText;
+      // The freshly-imported grid can be a different size (or wholly unrelated content) from
+      // whatever was on screen before, so a leftover selection rect from the prior grid must
+      // not survive: it would misindex the new matrix (silently wrong or empty tile counts) if
+      // left pointing at the same tab/Z. loadBlueprintIntoState already does this for the
+      // .xlsx/.json/multi-blueprint-CSV import paths; this in-place single-blueprint CSV path
+      // was the one import route that never reset it.
+      clearSelection();
       if (firstTab) setActiveTab(firstTab);
       else renderGrid();
     }
@@ -7483,7 +7925,16 @@ const state = {
       reader.readAsText(f);
     });
     // Paste CSV from clipboard: read text, run through the same import pipeline as Load CSV.
+    // navigator.clipboard itself can be undefined (insecure context, or a browser that does
+    // not expose the Clipboard API at all), not just a rejected readText() call, so this is
+    // guarded the same optional-chained way as copyToClipboard/copyActiveTabPNG instead of
+    // calling straight into it: an undefined clipboard would otherwise throw synchronously
+    // and crash this click handler instead of failing gracefully like its sibling paths.
     document.getElementById('pastecsv')?.addEventListener('click', () => {
+      if (!navigator.clipboard?.readText) {
+        alert('Clipboard access is unavailable here. Use "Load CSV" or drag a file onto the page instead.');
+        return;
+      }
       navigator.clipboard.readText().then(text => {
         if (!text.trim()) return;
         try { importCSVText(text); }
@@ -7779,7 +8230,7 @@ const state = {
         // ? (Shift+/) toggles the help popover; guarded off when typing in a field.
         if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
           const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
-          if (tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable)) return;
+          if (tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable) || isAnyModalOpen()) return;
           e.preventDefault();
           pop.classList.toggle('hidden');
         }
@@ -8065,6 +8516,12 @@ const state = {
     const ZONE_DESIRED_PROPS = ['desired_goblets','desired_instruments','desired_splints','desired_thread','desired_cloth','desired_crutches','desired_powder','desired_buckets','desired_soap','desired_paper'];
     const zoneDesiredInputId = key => 'zone-' + key.replace(/_/g, '-');
 
+    // Emit a property value verbatim, quoting only when it carries whitespace so a multi-word
+    // value (a two-word profession, or a location name with a space) stays one valid Quickfort
+    // token instead of being split on the space. No-space values are byte-unchanged. The
+    // reverse-parser (parseProps -> unq) strips the quotes on import, so the round-trip is lossless.
+    function quoteIfSpaced(v) { return /\s/.test(v) ? JSON.stringify(v) : v; }
+
     function buildZoneProps() {
       const props = [];
       const name = document.getElementById('zone-name')?.value?.trim();
@@ -8073,10 +8530,10 @@ const state = {
       const locName = document.getElementById('zone-location-name')?.value?.trim();
       if (locType) {
         const loc = locName ? `${locType}/${locName}` : locType;
-        props.push(`location=${loc}`);
+        props.push(`location=${quoteIfSpaced(loc)}`);
       }
       const prof = document.getElementById('zone-profession')?.value?.trim();
-      if (prof) props.push(`profession=${prof}`);
+      if (prof) props.push(`profession=${quoteIfSpaced(prof)}`);
       const allow = document.getElementById('zone-allow')?.value;
       if (allow) props.push(`allow=${allow}`);
       const assigned = document.getElementById('zone-assigned-unit')?.value?.trim();
@@ -8094,8 +8551,8 @@ const state = {
       if (document.getElementById('zone-deactivate')?.checked) props.push('active=false');
       // Location supply targets (spec sec 11): desired_X=<n> for the attached location.
       ZONE_DESIRED_PROPS.forEach(key => {
-        const v = document.getElementById(zoneDesiredInputId(key))?.value?.trim();
-        if (v) props.push(`${key}=${v}`);
+        const v = document.getElementById(zoneDesiredInputId(key))?.value;
+        if (v !== '' && v != null) props.push(`${key}=${Number(v)}`);
       });
       const extra = document.getElementById('zone-props')?.value?.trim();
       if (extra) props.push(extra);
@@ -8137,7 +8594,7 @@ const state = {
       if (maxOrders !== '' && maxOrders != null) props.push(`max_general_orders=${Number(maxOrders)}`);
       // Skill range: emit the value verbatim (a numeric level like 0-15, or a level name).
       // Quote only if it carries whitespace (e.g. "High Master") so the token stays valid.
-      const emitSkill = v => /\s/.test(v) ? JSON.stringify(v) : v;
+      const emitSkill = quoteIfSpaced;
       const minSkill = document.getElementById('build-min-skill')?.value?.trim();
       if (minSkill) props.push(`min_skill=${emitSkill(minSkill)}`);
       const maxSkill = document.getElementById('build-max-skill')?.value?.trim();
@@ -8162,13 +8619,19 @@ const state = {
     // On success, sets selectedToolByTab[tabId] to the base type letters (e.g. "f"),
     // clears and repopulates all structured panel inputs, and returns true.
     // Returns false for unrecognised formats -> caller keeps verbatim token.
+    // A quoted free-text prop value (name="Pen}1") may itself contain a literal '}', so every
+    // {...} capture below matches "quoted string OR any non-'}' char" (repeated) instead of a
+    // naive [^}]*, which would stop at that inner '}' and fail the whole match.
     function populatePanelFromToken(tabId, token) {
       if (!token) return false;
-      const unq = s => (s.startsWith('"') && s.endsWith('"')) ? s.slice(1,-1).replace(/\\"/g,'"') : s;
+      // Inverse of the emit side's JSON.stringify: it escapes BOTH " -> \" and \ -> \\,
+      // so undo both. Undoing only \" (the old code) left \\ intact, and the next
+      // JSON.stringify re-escaped it, doubling every backslash on each eyedropper -> repaint.
+      const unq = s => (s.startsWith('"') && s.endsWith('"')) ? s.slice(1,-1).replace(/\\(["\\])/g,'$1') : s;
       const setV = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ''; };
       const setC = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
       function parseProps(propsStr, handlers, unknownArr) {
-        const re = /\b([a-z_]+)=("(?:[^"\\]|\\.)*"|[^\s}]+)/g;
+        const re = /\b([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|[^\s}]+)/g;
         let pm;
         while ((pm = re.exec(propsStr)) !== null) {
           const key = pm[1], raw = pm[2], val = unq(raw);
@@ -8201,7 +8664,7 @@ const state = {
       }
       if (tabId === 'place') {
         // Grammar: TYPES[/LABEL][{PROPS}][:CONFIG][(WxH)] where CONFIG leads with an op (=/-/+).
-        const m = /^([a-zA-Z]+)(?:\/([A-Za-z0-9_]+))?(?:\{([^}]*)\})?(?::([^(]*))?(?:\((\d+)x(\d+)\))?$/.exec(token);
+        const m = /^([a-zA-Z]+)(?:\/([A-Za-z0-9_]+))?(?:\{((?:"(?:[^"\\]|\\.)*"|[^}])*)\})?(?::([^(]*))?(?:\((\d+)x(\d+)\))?$/.exec(token);
         if (!m) return false;
         const [, types, label='', propsStr='', config='', pw='', ph=''] = m;
         state.selectedToolByTab[tabId] = types;
@@ -8246,7 +8709,7 @@ const state = {
         // are one letter each, NOT greedy [a-zA-Z]+. A greedy first group swallowed a braceless
         // base + overlap (base `n` + overlay `t{active=false}` composes to `nt{active=false}`) as
         // one fake type "nt" with the overlay's props, so Alt+click lost the stack the grid shows.
-        const m = /^([a-zA-Z])(?:\/([A-Za-z0-9_]+))?(?:\{([^}]*)\})?((?:[a-zA-Z](?:\/[A-Za-z0-9_]+)?(?:\{[^}]*\})?)*)(?:\((\d+)x(\d+)\))?$/.exec(token);
+        const m = /^([a-zA-Z])(?:\/([A-Za-z0-9_]+))?(?:\{((?:"(?:[^"\\]|\\.)*"|[^}])*)\})?((?:[a-zA-Z](?:\/[A-Za-z0-9_]+)?(?:\{(?:"(?:[^"\\]|\\.)*"|[^}])*\})?)*)(?:\((\d+)x(\d+)\))?$/.exec(token);
         if (!m) return false;
         const [, types, label='', propsStr='', overlay='', ew='', eh=''] = m;
         state.selectedToolByTab[tabId] = types;
@@ -8262,22 +8725,43 @@ const state = {
         const unknown = [];
         const zoneHandlers = {
           name:          v => setV('zone-name', v),
+          // The <select> only holds its five fixed location types; DFHack recognises more
+          // (e.g. inn), and a blueprint carrying an out-of-list type would silently blank the
+          // select, which on repaint drops the WHOLE location (buildZoneProps emits it only
+          // when a type is set), losing the location name too. Route an unrepresentable type
+          // to extra-props so it round-trips verbatim, mirroring the allow/speed guards.
           location:      v => {
             const sl = v.indexOf('/');
-            setV('zone-location', sl !== -1 ? v.slice(0, sl) : v);
+            const type = sl !== -1 ? v.slice(0, sl) : v;
+            if (!['tavern','temple','library','guildhall','hospital'].includes(type)) {
+              unknown.push(`location=${v}`);
+              return;
+            }
+            setV('zone-location', type);
             if (sl !== -1) setV('zone-location-name', v.slice(sl + 1));
           },
           profession:    v => setV('zone-profession', v),
-          allow:         v => setV('zone-allow', v),
+          // A <select> can only hold one of its four fixed options; DF's location access
+          // screen lets several be toggled at once (a real blueprint may carry
+          // allow=residents,citizens), which would silently reset to blank and vanish on
+          // repaint. Fall back to extra-props for anything the select can't represent,
+          // mirroring the roller-speed guard below.
+          allow:         v => ['visitors','residents','citizens','members'].includes(v)
+                                 ? setV('zone-allow', v) : unknown.push(`allow=${v}`),
           assigned_unit: v => setV('zone-assigned-unit', v),
           shoot_from:    v => setV('zone-shoot-from', v),
           pond:          v => setC('zone-pond', v === 'true'),
           pets:          v => setC('zone-pets', v === 'true'),
-          citizens:      v => setC('zone-no-citizens', v === 'false'),
-          pick_trees:    v => setC('zone-no-pick-trees', v === 'false'),
-          pick_shrubs:   v => setC('zone-no-pick-shrubs', v === 'false'),
-          gather_fallen: v => setC('zone-no-gather-fallen', v === 'false'),
-          active:        v => setC('zone-deactivate', v === 'false'),
+          // Each of these checkboxes can only express "=false" (checked) or "not set"
+          // (unchecked): there is no field for an explicit "=true", which is the default
+          // and normally omitted. An imported blueprint that still spells it out (e.g.
+          // citizens=true) must not vanish on repaint, so route anything other than
+          // "false" to extra-props instead of silently treating it as handled.
+          citizens:      v => v === 'false' ? setC('zone-no-citizens', true) : unknown.push(`citizens=${v}`),
+          pick_trees:    v => v === 'false' ? setC('zone-no-pick-trees', true) : unknown.push(`pick_trees=${v}`),
+          pick_shrubs:   v => v === 'false' ? setC('zone-no-pick-shrubs', true) : unknown.push(`pick_shrubs=${v}`),
+          gather_fallen: v => v === 'false' ? setC('zone-no-gather-fallen', true) : unknown.push(`gather_fallen=${v}`),
+          active:        v => v === 'false' ? setC('zone-deactivate', true) : unknown.push(`active=${v}`),
         };
         // Reverse-parse each desired_* stock target into its structured input (else it would
         // fall through to the unknown bucket and leak back into the extra-props field).
@@ -8291,7 +8775,7 @@ const state = {
         // uppercase: wm, Cw, ~b, Msu, gw). CONFIG is the track-stop stockpile filter (leads with
         // an op =/-/+). A token carrying its own label / (expansion) is kept verbatim (the build
         // panel has no field to round-trip those).
-        const m = /^([^{}()/:\s]+)(?:\{([^}]*)\})?(?::([^()]*))?$/.exec(token);
+        const m = /^([^{}()/:\s]+)(?:\{((?:"(?:[^"\\]|\\.)*"|[^}])*)\})?(?::([^()]*))?$/.exec(token);
         if (!m) return false;
         const [, base, propsStr='', config=''] = m;
         state.selectedToolByTab[tabId] = base;
@@ -8325,7 +8809,7 @@ const state = {
       }
       if (tabId === 'burrow') {
         // Grammar: BASE[{PROPS}][(WxH)].
-        const m = /^([^{}()/:\s]+)(?:\{([^}]*)\})?(?:\((\d+)x(\d+)\))?$/.exec(token);
+        const m = /^([^{}()/:\s]+)(?:\{((?:"(?:[^"\\]|\\.)*"|[^}])*)\})?(?:\((\d+)x(\d+)\))?$/.exec(token);
         if (!m) return false;
         const [, base, propsStr='', ew='', eh=''] = m;
         state.selectedToolByTab[tabId] = base;
@@ -8383,6 +8867,12 @@ const state = {
         const overlay = (document.getElementById('zone-overlay')?.value || '').trim();
         const ext = buildExtentSuffix('zone-extent');
         if (label) token += label; // type/label, before {properties}
+        // A label with no properties of its own, directly followed by an overlay that starts
+        // with a bare letter (no leading {/(//), is ambiguous to decompose: "Pen1t{...}" could
+        // equally be read back as label "Pen1t" with props "active=...". An empty {} gives the
+        // label the same unambiguous boundary a real {properties} block already provides, with
+        // no effect on the zone's actual properties (an empty brace pair sets nothing).
+        if (label && overlay && !props) token += '{}';
         if (props) token += props;
         if (overlay) token += overlay; // extra overlapping zones, before the shared extent
         if (ext) token += ext; // append extent at the very end
@@ -8720,11 +9210,18 @@ const state = {
       // Single-key shortcuts that drive the rail buttons (so all existing sync
       // logic runs and nothing drifts). No modifier, and never while typing in a
       // field, so they don't clash with Ctrl/Cmd shortcuts or text entry.
+      // Also guarded off mid-drag (isPaintDragActive): a mouse click can never reach
+      // the rail while the mouse button is held down elsewhere, but these keys are on
+      // the keyboard, so without the guard pressing R/L/C/G/B/E/M mid shape drag swaps
+      // state.selectedShape (or the active tool) out from under onMouseUpOnce, which
+      // reads that same live state at commit time and would then paint the wrong shape
+      // for the transaction historyBegin() already opened at mousedown.
       const SHAPE_KEYS = { b: 'free', r: 'rect', l: 'line', c: 'circle', g: 'fill' };
       document.addEventListener('keydown', (e) => {
         if (e.ctrlKey || e.metaKey || e.altKey) return;
         const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
-        if (tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable)) return;
+        if (tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable) || isAnyModalOpen()) return;
+        if (isPaintDragActive()) return;
         const k = e.key.toLowerCase();
         if (SHAPE_KEYS[k]) {
           const btn = rail.querySelector('[data-shape="' + SHAPE_KEYS[k] + '"]');
@@ -8745,11 +9242,6 @@ const state = {
           e.preventDefault(); stepBrush(-1);
         } else if (e.key === ']') {
           e.preventDefault(); stepBrush(1);
-        } else if (e.key >= '1' && e.key <= '5') {
-          // 1-5 switch mode tabs: Dig / Build / Stockpiles / Zones / Burrows.
-          e.preventDefault();
-          const tabIds = ['dig', 'build', 'place', 'zone', 'burrow'];
-          setActiveTab(tabIds[parseInt(e.key, 10) - 1]);
         } else if (e.key === 'F2') {
           // F2 = rename active blueprint (universal file-manager convention).
           e.preventDefault();
@@ -8939,6 +9431,19 @@ const state = {
       document.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'p')) {
           e.preventDefault();
+          // Opening the palette mid paint-stroke/shape-drag/selection-marquee lets a
+          // palette action (Undo, tab switch, ...) run while state.currentAction is
+          // still the drag's open transaction, misfiling it the same way the guarded
+          // wheel/PageUp/PageDown/1-5 switches did before isPaintDragActive() (see the
+          // comment above its definition). isAnyModalOpen() is checked for the same
+          // reason every OTHER shortcut checks it: unlike those, this handler only
+          // ever guarded against a drag, so Ctrl/Cmd+K could open the palette (z-index
+          // above every modal-backdrop) on top of an already-open Tile counts / Find &
+          // replace / CSV preview / Colour overrides dialog, letting a palette command
+          // (including one that opens a SECOND modal, e.g. "Tools: tile counts") run or
+          // stack while the first dialog was still open. Closing an already-open palette
+          // is unaffected either way.
+          if ((isPaintDragActive() || isAnyModalOpen()) && !overlay.classList.contains('open')) return;
           overlay.classList.contains('open') ? close() : open();
         }
       });
@@ -8948,7 +9453,12 @@ const state = {
     // Polls the page's own server version signature (Last-Modified / ETag /
     // Content-Length, cache-busted) against a baseline captured at load. When it
     // changes, a new build went live, so flush autosave and reload fresh. Work
-    // is restored from localStorage on the next load, so the reload is lossless.
+    // is restored from localStorage on the next load, so the reload is lossless
+    // ONLY when autosave consent is on; reloadWouldLoseWork() below defers the
+    // reload otherwise (retried on the next check), since this navigation has
+    // no user gesture behind it and the beforeunload "leave site?" prompt used
+    // elsewhere in this file to guard the same no-autosave case does not fire
+    // for a script-driven location.replace() with no sticky user activation.
     (function autoUpdateCheck(){
       // Only meaningful on a real http(s) deployment. Skip on file:// (opening
       // the page locally), where a cross-origin fetch is blocked by the browser.
@@ -8962,6 +9472,16 @@ const state = {
           return r.headers.get('Last-Modified') || r.headers.get('ETag') || r.headers.get('Content-Length') || null;
         } catch (_) { return null; }
       }
+      // True when reloading right now would silently discard painted work:
+      // autosave consent is off (so writeAutosave() below is a no-op) and some
+      // blueprint actually has content.
+      function reloadWouldLoseWork(){
+        if (!(window.qfStorage && !window.qfStorage.isOn('autosave'))) return false;
+        try {
+          if (typeof saveActiveIntoWorkbook === 'function') saveActiveIntoWorkbook();
+          return typeof anyBlueprintHasContent === 'function' && anyBlueprintHasContent();
+        } catch (_) { return false; }
+      }
       async function check(){
         if (reloading) return;
         const now = Date.now();
@@ -8971,6 +9491,7 @@ const state = {
         if (!sig) return;                      // can't read a signature: do nothing
         if (baseline === null) { baseline = sig; return; }
         if (sig !== baseline) {                // new build detected
+          if (reloadWouldLoseWork()) return;   // unsafe right now: retry on the next check
           reloading = true;
           try { if (typeof writeAutosave === 'function') writeAutosave(); } catch (_) {}
           location.replace(pagePath + '?_r=' + Date.now());  // cache-busted fresh load
