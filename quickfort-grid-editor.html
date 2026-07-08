@@ -610,7 +610,7 @@
             <h4>Features worth knowing</h4>
             <div class="feat"><b>Examples</b><span>Import menu loads a bedroom, stockpile, or dining-hall starter</span></div>
             <div class="feat"><b>Drag and drop</b><span>drop a .csv, .xlsx, or .json file onto the window to load it</span></div>
-            <div class="feat"><b>Command palette</b><span>Ctrl/Cmd+K runs everything</span></div>
+            <div class="feat"><b>Command palette</b><span>Ctrl/Cmd+K (or P) runs everything</span></div>
             <div class="feat"><b>Workbook</b><span>top-bar tabs are separate blueprints</span></div>
             <div class="feat"><b>Paste Blueprint</b><span>stamp another blueprint's Z-level</span></div>
             <div class="feat"><b>Selection to blueprint</b><span>extract a room into its own reusable blueprint</span></div>
@@ -629,7 +629,7 @@
         <div class="help-sec help-keys">
           <h4><i class="ti ti-keyboard"></i> Shortcuts</h4>
           <div class="row-grid">
-            <div class="row"><span class="help-k">Ctrl/Cmd+K</span> command palette</div>
+            <div class="row"><span class="help-k">Ctrl/Cmd+K</span> <span class="help-k">P</span> command palette</div>
             <div class="row"><span class="help-k">Ctrl/Cmd+S</span> save project (.json)</div>
             <div class="row"><span class="help-k">Ctrl/Cmd+Z</span> <span class="help-k">Y</span> undo, redo</div>
             <div class="row"><span class="help-k">Ctrl/Cmd +</span> <span class="help-k">-</span> <span class="help-k">0</span> zoom, reset</div>
@@ -850,6 +850,18 @@
           if (!on) (KEYS[f] || []).forEach(function(k){ try { real.r(k); } catch (e) {} });
         }
       };
+      // Two tabs/windows can have this file open on the same origin at once.
+      // `prefs` above is only a snapshot read at load, so without this listener
+      // a consent change made in one tab (e.g. turning autosave OFF) never
+      // reaches an already-open tab: that tab's `allowed()` keeps reading its
+      // stale in-memory prefs and keeps writing autosave to disk on its next
+      // periodic save, silently ignoring the revoked consent. The native
+      // 'storage' event fires in every OTHER same-origin tab whenever
+      // localStorage changes, so resync `prefs` from it here.
+      window.addEventListener('storage', function(e){
+        if (e.key !== PREFS) return;
+        try { prefs = e.newValue ? (JSON.parse(e.newValue) || {}) : {}; } catch (_) { prefs = {}; }
+      });
     })();
 
     // Blueprint tabs and their quickfort type headers
@@ -1126,11 +1138,20 @@ const state = {
     const rows = Math.max(1, Math.min(300, parseInt(newRows, 10) || 1));
     const cols = Math.max(1, Math.min(300, parseInt(newCols, 10) || 1));
     if (rows === state.rows && cols === state.cols) return;
+    // A shrink permanently drops every cell outside the new bounds (confirmed via
+    // setGridSizeWithConfirm as "cannot be undone"). Their {r,c} paint-history entries
+    // must not survive: growing the grid back later would put live cells at those same
+    // coordinates again, and an Undo/Redo of a stale entry would silently resurrect the
+    // deleted token (or clobber unrelated new content) at that spot. Same invariant
+    // afterStructuralResize enforces for row/col insert/delete; a plain grow keeps
+    // every coordinate valid, so it does not need this.
+    const shrinking = rows < state.rows || cols < state.cols;
     state.rows = rows; state.cols = cols;
     clampAxes();
     const colsInput = document.getElementById('cols'); if (colsInput) colsInput.value = String(cols);
     const rowsInput = document.getElementById('rows'); if (rowsInput) rowsInput.value = String(rows);
     resizeAllGrids(rows, cols);
+    if (shrinking) resetAllPaintHistory();
     // A shrink can strand the selection rect outside the new bounds (a mispositioned
     // overlay, and copy/cut/move acting on an off-grid, inverted range); drop it when
     // it no longer fits, mirroring afterStructuralResize's stale-rect clear. A grow, or
@@ -1649,6 +1670,15 @@ const state = {
       if (matchStat) matchStat.textContent = count > 0 ? `${count} match${count === 1 ? '' : 'es'}` : '';
     }
 
+    // Step the match cursor by dir (+1 next, -1 previous) over `len` matches, wrapping.
+    // From the unstarted state (current = -1), forward lands on the first match (0) and
+    // backward on the LAST (len-1). Naive modulo gives 0 for dir=+1 but wraps -1 + -1 = -2
+    // to len-2 (second-to-last), skipping the last, so anchor a backward step at 0 first.
+    function stepMatchIndex(current, dir, len) {
+      if (current < 0 && dir < 0) current = 0;
+      return ((current + dir) % len + len) % len;
+    }
+
     // Navigate to the next (dir=+1) or previous (dir=-1) matching cell when Highlight
     // matches is on. Wraps around. Updates match-stat to "Match N of M" while navigating.
     function gotoNextMatch(dir) {
@@ -1657,7 +1687,7 @@ const state = {
         .sort((a, b) => (+a.dataset.r - +b.dataset.r) || (+a.dataset.c - +b.dataset.c));
       if (!matches.length) return;
       gridEl.querySelectorAll('td.match-focus').forEach(td => td.classList.remove('match-focus'));
-      matchFocusIdx = ((matchFocusIdx + dir) % matches.length + matches.length) % matches.length;
+      matchFocusIdx = stepMatchIndex(matchFocusIdx, dir, matches.length);
       const td = matches[matchFocusIdx];
       td.classList.add('match-focus');
       td.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
@@ -2199,7 +2229,15 @@ const state = {
       else if ((bm = /^(roller|trackstop)([NSEW])([NSEW]?)$/.exec(base)))
         newBase = bm[1] + (map[bm[2]] || bm[2]) + (bm[3] ? (map[bm[3]] || bm[3]) : '');
       else if (AXIS_SWAP[base] && (kind === 'rotate' || kind === 'rotateCCW')) newBase = AXIS_SWAP[base];
-      return newBase + tail;
+      // A trailing (WxH) area-expansion extent (place/zone/burrow stockpile, e.g. a(3x1))
+      // transposes under a 90-degree rotation: a 3-wide 1-tall block becomes 1-wide 3-tall.
+      // Mirrors preserve W and H, so only rotate/rotateCCW swap them. Anchored to the token
+      // end so a (3x3)-looking substring inside a {prop} or /label is never touched; the
+      // extent is always the last element of the grammar TYPES[/LABEL][{PROPS}][:CONFIG][(WxH)].
+      const newTail = (kind === 'rotate' || kind === 'rotateCCW')
+        ? tail.replace(/\((\d+)x(\d+)\)$/i, (_, w, h) => `(${h}x${w})`)
+        : tail;
+      return newBase + newTail;
     }
     function reaimMatTokens(mat, kind) {
       return mat.map(row => row.map(tok => tok ? reaimBuildingToken(reaimTrackToken(tok, kind), kind) : tok));
@@ -3106,9 +3144,11 @@ const state = {
 
     // Render the current tab + Z-level to an offscreen canvas: a PNG picture of
     // the blueprint. Each cell is filled with the SAME token->colour the
-    // grid/legend/.xlsx use (via tokenFill, so user colour overrides +
-    // colourblind mode are respected) with its short glyph drawn on top, and the
-    // active section's start() cursor marked with a green ring (matching the
+    // grid/legend/.xlsx use (via tokenFill, so user colour overrides are
+    // respected; colourblind mode only re-tints UI chrome, not the token colour
+    // maps, so it does not alter the picture) with its short glyph drawn on top
+    // (always the short glyph, regardless of the full-syntax display toggle), and
+    // the active section's start() cursor marked with a green ring (matching the
     // on-screen marker). A purely visual snapshot for sharing/planning: it
     // carries no Quickfort data (use Download CSV / Export .xlsx for an
     // importable blueprint). Shared by exportPNG (download) and copyActiveTabPNG
@@ -3203,6 +3243,15 @@ const state = {
       return typeof XLSX !== 'undefined' && XLSX && XLSX.utils && XLSX.write;
     }
 
+    // Truncates to at most maxLen Unicode CODEPOINTS, not UTF-16 code units, so an astral
+    // character (an emoji, e.g. blueprint names can hold any Unicode via the plain rename
+    // prompt) is never cut in the middle of its surrogate pair. A plain `.slice(0, N)` can
+    // land between a high and low surrogate, leaving a lone surrogate that has no valid
+    // UTF-8 form and corrupts the sheet name once the xlsx XML is serialized.
+    function truncateAtCodepoint(str, maxLen) {
+      const chars = Array.from(str);
+      return chars.length > maxLen ? chars.slice(0, maxLen).join('') : str;
+    }
     // Excel sheet names: max 31 chars, no : \ / ? * [ ]. Sanitize tab ids / blueprint names.
     // Excel enforces sheet-name uniqueness CASE-INSENSITIVELY, so two blueprints named e.g.
     // "Farm" and "farm" would both pass a case-sensitive dedupe, land as distinct sheets in
@@ -3212,9 +3261,9 @@ const state = {
     // Set per export. Names already unique case-insensitively (incl. the fixed tab ids) return
     // byte-unchanged.
     function safeSheetName(name, used) {
-      let s = String(name || 'Sheet').replace(/[:\\\/?*\[\]]/g, '_').slice(0, 31) || 'Sheet';
+      let s = truncateAtCodepoint(String(name || 'Sheet').replace(/[:\\\/?*\[\]]/g, '_'), 31) || 'Sheet';
       let base = s, i = 2;
-      while (used.has(s.toLowerCase())) { s = (base.slice(0, 28) + '_' + i).slice(0, 31); i++; }
+      while (used.has(s.toLowerCase())) { s = truncateAtCodepoint(truncateAtCodepoint(base, 28) + '_' + i, 31); i++; }
       used.add(s.toLowerCase());
       return s;
     }
@@ -3575,7 +3624,8 @@ const state = {
       // current tab. selection/paste/history stay transient (reset below).
       state.activeZ = bp.activeZ | 0;
       state.selectionRect = null;
-      state.copyBuffer = state.copyBuffer; // keep clipboard (handy for cross-blueprint paste)
+      // copyBuffer is intentionally NOT reset here: the clipboard is kept across
+      // a blueprint switch so a copied region can be pasted into another one.
       state.pasteMode = false;
       state.selectionMode = false;
       state.history = {};
@@ -3688,12 +3738,13 @@ const state = {
     }
 
     // Replace the workbook with a saved session and load its active blueprint.
-    // Returns true when a session was restored.
+    // Returns the restored payload (so the caller can read its real savedAt),
+    // or null when nothing was restored.
     function restoreAutosave() {
       const p = readAutosave();
-      if (!p) return false;
+      if (!p) return null;
       applyWorkbookPayload(p);
-      return true;
+      return p;
     }
 
     // Discard the saved session and start fresh: wipe the autosave key and
@@ -6088,9 +6139,11 @@ const state = {
               }
             }
             const base = (tab === 'dig') ? stripDigMarkersAndPriority(raw) : stripPropsAndCfg(raw);
-            const key = (tab === 'place') ? base : base.charAt(0);
+            // Place tokens can carry a /label (e.g. f/feed): strip it before keying so
+            // f, f/feed and f/bar collapse into one legend row instead of three.
+            const key = (tab === 'place') ? base.split('/')[0] : base.charAt(0);
             if (!key) continue;
-            const label = lookup[key] || lookup[base] || base;
+            const label = lookup[key] || (tab === 'place' ? key : (lookup[base] || base));
             present.set(key, label);
           }
         }
@@ -6179,8 +6232,10 @@ const state = {
       if (scopeId === 'place') {
         const base = stripPropsAndCfg(s);
         const hasProps = base !== s;
-        // multi-type combo: use gradient
-        const letters = base.split('');
+        // Drop a leading /label before splitting into per-type letters: the label is
+        // free text (e.g. f/feed), not extra stockpile types, so it must not paint the
+        // cell as a multi-type gradient. Mirrors computeTileCounts' place/zone base strip.
+        const letters = base.split('/')[0].split('');
         const grad = gradientForLetters(letters, COLOR_PLACE);
         if (grad) {
           td.style.background = grad;
@@ -7120,7 +7175,10 @@ const state = {
       // Reverse scroll direction: wheel up moves down; wheel down moves up
       navigateZNoExtend(dy < 0 ? 1 : -1);
     };
-    if (gridContainerEl) gridContainerEl.addEventListener('wheel', onWheelZ, { passive: false });
+    // Wired on gridWrapEl only (grid-container is its child, so a wheel event over
+    // the grid already bubbles here): wiring onWheelZ on BOTH used to fire it twice
+    // per wheel tick (once directly on grid-container, once again here via bubbling),
+    // silently doubling the Z-step and the zoom step on every notch.
     if (gridWrapEl) gridWrapEl.addEventListener('wheel', (e) => {
       // Only intercept when over main grid container (not over previews if you prefer page scroll)
       if (gridContainerEl && gridContainerEl.contains(e.target)) onWheelZ(e);
@@ -7175,7 +7233,12 @@ const state = {
         if ((state.painting || state.shaping || state.selecting) && !rafId)
           rafId = requestAnimationFrame(tick);
       });
-      document.addEventListener('mouseup', () => { rafId = null; });
+      document.addEventListener('mouseup', () => {
+        // Cancel the pending frame, not just forget it: otherwise a stale queued tick() from
+        // this drag can outlive mouseup and run alongside a fresh chain started by an immediate
+        // redrag, doubling the scroll speed until the stale chain's own state check stops it.
+        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+      });
     })();
 
     // Selection controls wiring
@@ -7404,7 +7467,12 @@ const state = {
       if ((e.key === 'n' || e.key === 'N') && !isEditable && !e.ctrlKey && !e.metaKey && !e.altKey) {
         if (state.highlightMatches) { e.preventDefault(); gotoNextMatch(e.shiftKey ? -1 : 1); }
       }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+      // Ctrl/Cmd+V toggles grid paste mode when a region has been copied. Guarded off in
+      // text fields/modals (like copy/cut/select-all above) so the native paste still works
+      // when focus is in a sidebar input (a Name/take-from/config field) while a grid region
+      // sits in the copy buffer: without the guard, Ctrl+V there would preventDefault and
+      // toggle paste mode instead of pasting the clipboard text into the input.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V') && !isEditable) {
         if (state.copyBuffer) {
           e.preventDefault();
           state.pasteMode = !state.pasteMode;
@@ -7737,7 +7805,6 @@ const state = {
 
 
     function findMaxDimensionsOfSection(section) {
-        const levelChangeRgx = /^#([<>])(\d+)?$/;
         // Allow signed dims so a carved-track corner token (`T(-3x3)` etc.) is sized too. A
         // positive dim extends right/down from the anchor (bump cols/rows); a negative dim extends
         // left/up into already-counted space (no bump). For ordinary solid-block tokens both dims
@@ -7748,31 +7815,51 @@ const state = {
         let currentConsecutive = 0;
 
         for (const row of section) {
-            // Compute effective column count, expanding any (WxH) tokens.
-            // A cell with token(WxH) at column c occupies columns c..c+W-1.
-            let effectiveCols = row.length;
-            let maxH = 1;
-            for (let c = 0; c < row.length; c++) {
-                const m = expansionRgx.exec(String(row[c] ?? ''));
-                if (m) {
-                    const ew = parseInt(m[1], 10), eh = parseInt(m[2], 10);
-                    if (ew > 0) effectiveCols = Math.max(effectiveCols, c + ew);  // arm extends right
-                    if (eh > 0) maxH = Math.max(maxH, eh);                        // arm extends down
-                }
-            }
-            if (effectiveCols > maxCols) maxCols = effectiveCols;
+            // A row whose first cell starts with '#' is a control/comment line, and paints no grid
+            // cells (no column). importSectionToMultiZ treats the three kinds DIFFERENTLY, so the
+            // height count must too: a Z-change (#< / #>) resets its row cursor rr to 0 (a new
+            // floor), while a #0N origin marker or a Quickfort #comment is TRANSPARENT there (it
+            // continues WITHOUT touching rr, so content rows above and below stay contiguous in the
+            // same floor). Only the Z-change resets the height counter below; lumping every '#'-row
+            // into one reset made a mid-grid comment (or a #0N below the first content row) restart
+            // the count from 0, under-sizing the section so importSectionToMultiZ's
+            // `rr >= state.rows` guard silently dropped every content row below it.
+            const firstCell = String(row[0] ?? '').trim();
+            const isControlRow = firstCell.charAt(0) === '#';
+            const isZChange = /^#[<>]\d*$/.test(firstCell);
 
-            // Check if first field matches levelChangeRgx
-            const firstField = String(row[0] ?? '').trim();
-            if (!levelChangeRgx.test(firstField)) {
+            // Effective column extent, matching importSectionToMultiZ exactly: a control/comment
+            // row paints nothing; within a content row an inline '#' comment cell is skipped
+            // (occupies no column) while cells after it still land at their own index, and a
+            // token(WxH) at column c occupies columns c..c+W-1. Counting a skipped '#' cell,
+            // or a whole comment row's width, would over-size the reconstructed grid's columns.
+            let maxH = 1;
+            if (!isControlRow) {
+                let effectiveCols = 0;
+                for (let c = 0; c < row.length; c++) {
+                    const raw = String(row[c] ?? '');
+                    if (raw.trim().charAt(0) === '#') continue;   // inline comment cell: no column
+                    let cellRight = c + 1;                        // plain cell occupies column c
+                    const m = expansionRgx.exec(raw);
+                    if (m) {
+                        const ew = parseInt(m[1], 10), eh = parseInt(m[2], 10);
+                        if (ew > 0) cellRight = Math.max(cellRight, c + ew);  // arm extends right
+                        if (eh > 0) maxH = Math.max(maxH, eh);                // arm extends down
+                    }
+                    if (cellRight > effectiveCols) effectiveCols = cellRight;
+                }
+                if (effectiveCols > maxCols) maxCols = effectiveCols;
+
                 currentConsecutive++;
                 // An expansion in this row may cover maxH rows; account for them
                 // even if the CSV omits the trailing empty rows.
                 const effective = currentConsecutive + maxH - 1;
                 if (effective > maxConsecutive) maxConsecutive = effective;
-            } else {
-                currentConsecutive = 0;
+            } else if (isZChange) {
+                currentConsecutive = 0; // new floor: importSectionToMultiZ resets rr to 0 here
             }
+            // A transparent #0N / #comment row leaves currentConsecutive unchanged (it occupies no
+            // grid row and does not move the importer's rr), keeping rows above/below contiguous.
         }
 
         return [ maxCols, maxConsecutive ];
@@ -7796,21 +7883,30 @@ const state = {
     // buildWorkbookCSV, which stacks each blueprint's sections in Tabs order.
     function groupSheetsIntoBlueprints(sheets) {
       const groups = [];
-      let cur = null, usedTabs = null;
+      let cur = null, usedTabs = null, gridBoundaryPending = false;
       const startGroup = () => { cur = []; usedTabs = new Set(); groups.push(cur); };
       sheets.forEach(s => {
         const id = s.header ? headerToTabId(s.header) : null;
         const isGridTab = id != null && Tabs.some(t => t.id === id);
         // A content-free grid section is this editor's own empty-blueprint placeholder
         // marker (see sectionMatrixIsBlank): its tab was never really "used", so folding
-        // it into whatever group is open, or letting it hold that tab's slot open, can
-        // silently merge it into a neighbour or swallow the next real boundary. Give it
-        // its own standalone group and force the following section to start fresh too.
+        // it into whatever group is open would silently merge it into a neighbour. Give it
+        // its own standalone group. Its OWN trailing non-grid sections (#notes/#meta, which
+        // blueprintSnapshotToCSV emits right after the bare header for a pure-#meta or
+        // notes-only blueprint) must still attach to it, but the next GRID section begins a
+        // fresh blueprint. Nulling `cur` here instead pushed those trailing #notes/#meta into
+        // the FOLLOWING blueprint's group, so a pure-#meta blueprint lost its script on
+        // reimport and its neighbour inherited it (sheetsToBlueprint's #meta/#notes find()
+        // then picked the wrong section). Flag the boundary rather than closing the group.
         const isEmptyMarker = isGridTab && sectionMatrixIsBlank(s.matrix);
-        if (cur === null || isEmptyMarker || (isGridTab && usedTabs.has(id))) startGroup();
+        if (cur === null || isEmptyMarker || (isGridTab && (gridBoundaryPending || usedTabs.has(id)))) startGroup();
         cur.push(s);
         if (isGridTab && !isEmptyMarker) usedTabs.add(id);
-        if (isEmptyMarker) cur = null;
+        // Hold the empty marker's group open for its trailing non-grid sections, but force
+        // the next grid section to open a new group; the flag clears once a grid section
+        // (that new blueprint's first) has consumed it.
+        if (isEmptyMarker) gridBoundaryPending = true;
+        else if (isGridTab) gridBoundaryPending = false;
       });
       return groups;
     }
@@ -7889,16 +7985,14 @@ const state = {
           else delete state.modeline[id];
         }
       });
-      // Restore #notes content (replace whatever was in the textarea)
+      // Restore #notes / #meta content into blueprint-global state. The Blueprint
+      // menu's textareas AND its per-tab modeline marker inputs are resynced below
+      // (after the tab switch), not here, so every field reflects the imported values
+      // rather than the prior blueprint's.
       const notesSheet = sheets.find(s => s.header === '#notes');
       state.notesText = notesSheet ? sectionTextLines(notesSheet.matrix) : '';
-      const bpNotesEl = document.getElementById('bp-notes');
-      if (bpNotesEl) bpNotesEl.value = state.notesText;
-      // Restore #meta script content
       const metaSheet = sheets.find(s => s.header === '#meta');
       state.metaText = metaSheet ? sectionTextLines(metaSheet.matrix) : '';
-      const metaScriptEl = document.getElementById('meta-script');
-      if (metaScriptEl) metaScriptEl.value = state.metaText;
       // The freshly-imported grid can be a different size (or wholly unrelated content) from
       // whatever was on screen before, so a leftover selection rect from the prior grid must
       // not survive: it would misindex the new matrix (silently wrong or empty tile counts) if
@@ -7908,6 +8002,14 @@ const state = {
       clearSelection();
       if (firstTab) setActiveTab(firstTab);
       else renderGrid();
+      // Resync the Blueprint menu if it is open: the import replaced state.modeline,
+      // notesText and metaText, but neither this in-place path nor setActiveTab syncs
+      // those fields, so an open menu kept showing the pre-import blueprint's
+      // label/start/message/notes/meta while state held the new values. A later edit
+      // of any field then wrote the stale-displayed value back over the freshly
+      // imported modeline. Called AFTER setActiveTab so the per-tab ml-* inputs read
+      // the new active tab (firstTab), not the outgoing one.
+      refreshBlueprintMenuIfOpen();
     }
 
     document.getElementById('loadcsv').addEventListener('click', () => {
@@ -8101,10 +8203,17 @@ const state = {
       if (!tabId || !Tabs.some(t => t.id === tabId)) return; // skip retired/unknown modes (e.g. #query)
       let currentZ = 0;
       let savedZero = null;
-      const matrices = [makeMatrix(state.rows, state.cols)];
-      function ensureLocalZ(idx) {
-        while (matrices.length <= idx) matrices.push(makeMatrix(state.rows, state.cols));
+      // Layers are keyed by a SIGNED z so an upward blueprint (`#<`, e.g. a pump stack
+      // built bottom-up) does not collapse: the old fixed-at-0 clamp drove every `#<`
+      // section back onto index 0, overwriting all but the last floor. Collected by signed
+      // index here, then flattened to a 0-based array (top floor first) below; a pure
+      // `#>`/single-z file keeps min z = 0, so its layout stays byte-identical.
+      const layerMap = new Map();
+      function localLayer(idx) {
+        if (!layerMap.has(idx)) layerMap.set(idx, makeMatrix(state.rows, state.cols));
+        return layerMap.get(idx);
       }
+      localLayer(0);
       let rr = 0;
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i] || [];
@@ -8116,8 +8225,8 @@ const state = {
         if (m) {
           const dir = m[1];
           const step = m[2] ? parseInt(m[2], 10) : 1;
-          if (dir === '>') currentZ += step; else if (dir === '<') currentZ = Math.max(0, currentZ - step);
-          ensureLocalZ(currentZ);
+          if (dir === '>') currentZ += step; else currentZ -= step; // `<` may go negative; normalized below
+          localLayer(currentZ);
           rr = 0;
           continue;
         }
@@ -8125,8 +8234,7 @@ const state = {
         // control row handled above) is a comment line, ignored entirely, and does NOT
         // occupy a grid row. No valid dig/build/place/zone/burrow token begins with '#'.
         if (first.charAt(0) === '#') continue;
-        ensureLocalZ(currentZ);
-        const mat = matrices[currentZ];
+        const mat = localLayer(currentZ);
         if (rr >= state.rows) continue;
         for (let c = 0; c < Math.min(row.length, state.cols); c++) {
           const val = String(row[c] ?? '');
@@ -8149,11 +8257,11 @@ const state = {
                 const sc = cw < 0 ? -1 : 1, sr = ch < 0 ? -1 : 1;   // arm directions from the sign
                 for (let dc = 0; dc < aw; dc++) {     // horizontal arm along the anchor row
                   const cc = c + dc * sc;
-                  if (cc >= 0 && cc < state.cols) matrices[currentZ][rr][cc] = 'T';
+                  if (cc >= 0 && cc < state.cols) mat[rr][cc] = 'T';
                 }
                 for (let dr = 0; dr < ah; dr++) {     // vertical arm along the anchor column
                   const rrr = rr + dr * sr;
-                  if (rrr >= 0 && rrr < state.rows) matrices[currentZ][rrr][c] = 'T';
+                  if (rrr >= 0 && rrr < state.rows) mat[rrr][c] = 'T';
                 }
                 continue;   // handled; skip the generic solid-block expansion below
               }
@@ -8176,7 +8284,7 @@ const state = {
               for (let dc = 0; dc < Math.abs(rawW); dc++) {
                 const cc = c + dc * stepC;
                 if (cc < 0 || cc >= state.cols) continue;
-                matrices[currentZ][rrr][cc] = base;
+                mat[rrr][cc] = base;
               }
             }
           } else if (val !== '') {
@@ -8187,6 +8295,14 @@ const state = {
         }
         rr++;
       }
+      // Flatten signed layers into a 0-based array ordered top (min z) -> bottom (max z),
+      // matching the layout the `#>`-only path produced (min z was always 0 there, so that
+      // case stays byte-identical). Gaps from a multi-step jump (e.g. `#>3`) are filled blank.
+      const zKeys = [...layerMap.keys()].sort((a, b) => a - b);
+      const minZ = zKeys[0];
+      const matrices = [];
+      for (const k of zKeys) matrices[k - minZ] = layerMap.get(k);
+      for (let z = 0; z < matrices.length; z++) if (!matrices[z]) matrices[z] = makeMatrix(state.rows, state.cols);
       // Extend global zCount if needed and ensure global structures
       if (matrices.length > state.zCount) state.zCount = matrices.length;
       ensureGrids();
@@ -8453,6 +8569,19 @@ const state = {
       return lab ? `/${lab}` : '';
     }
 
+    // Reads a `type="number" min="0"` count field (barrels, bins, desired_*, max_general_orders,
+    // ...) as a non-negative integer. The min attribute only marks the field :invalid; it does not
+    // stop the user from typing (or pasting) "-3" or "2.5", which would otherwise be emitted
+    // verbatim as an invalid property like barrels=-3 or barrels=2.5. Blank stays blank (returns
+    // null, so the caller omits the property instead of defaulting it to 0).
+    function nonNegIntPropValue(id) {
+      const raw = document.getElementById(id)?.value;
+      if (raw === '' || raw == null) return null;
+      const n = Math.round(Number(raw));
+      if (isNaN(n)) return null;
+      return Math.max(0, n);
+    }
+
     function buildPlaceProps() {
       const props = [];
       const name = document.getElementById('place-name')?.value?.trim();
@@ -8461,14 +8590,14 @@ const state = {
       if (takeFrom) props.push(`take_from=${JSON.stringify(takeFrom)}`);
       const giveTo = document.getElementById('place-give-to')?.value?.trim();
       if (giveTo) props.push(`give_to=${JSON.stringify(giveTo)}`);
-      const barrels = document.getElementById('place-barrels')?.value;
-      if (barrels !== '' && barrels != null) props.push(`barrels=${Number(barrels)}`);
-      const bins = document.getElementById('place-bins')?.value;
-      if (bins !== '' && bins != null) props.push(`bins=${Number(bins)}`);
-      const wheelbarrows = document.getElementById('place-wheelbarrows')?.value;
-      if (wheelbarrows !== '' && wheelbarrows != null) props.push(`wheelbarrows=${Number(wheelbarrows)}`);
-      const containers = document.getElementById('place-containers')?.value;
-      if (containers !== '' && containers != null) props.push(`containers=${Number(containers)}`);
+      const barrels = nonNegIntPropValue('place-barrels');
+      if (barrels !== null) props.push(`barrels=${barrels}`);
+      const bins = nonNegIntPropValue('place-bins');
+      if (bins !== null) props.push(`bins=${bins}`);
+      const wheelbarrows = nonNegIntPropValue('place-wheelbarrows');
+      if (wheelbarrows !== null) props.push(`wheelbarrows=${wheelbarrows}`);
+      const containers = nonNegIntPropValue('place-containers');
+      if (containers !== null) props.push(`containers=${containers}`);
       if (document.getElementById('place-links-only')?.checked) props.push('links_only=true');
       if (document.getElementById('place-quantum')?.checked) props.push('quantum=true');
       if (document.getElementById('place-automelt')?.checked) props.push('automelt=true');
@@ -8551,8 +8680,8 @@ const state = {
       if (document.getElementById('zone-deactivate')?.checked) props.push('active=false');
       // Location supply targets (spec sec 11): desired_X=<n> for the attached location.
       ZONE_DESIRED_PROPS.forEach(key => {
-        const v = document.getElementById(zoneDesiredInputId(key))?.value;
-        if (v !== '' && v != null) props.push(`${key}=${Number(v)}`);
+        const v = nonNegIntPropValue(zoneDesiredInputId(key));
+        if (v !== null) props.push(`${key}=${v}`);
       });
       const extra = document.getElementById('zone-props')?.value?.trim();
       if (extra) props.push(extra);
@@ -8590,8 +8719,8 @@ const state = {
       if (giveTo) props.push(`give_to=${JSON.stringify(giveTo)}`);
       const route = document.getElementById('build-route')?.value?.trim();
       if (route) props.push(`route=${JSON.stringify(route)}`);
-      const maxOrders = document.getElementById('build-max-orders')?.value;
-      if (maxOrders !== '' && maxOrders != null) props.push(`max_general_orders=${Number(maxOrders)}`);
+      const maxOrders = nonNegIntPropValue('build-max-orders');
+      if (maxOrders !== null) props.push(`max_general_orders=${maxOrders}`);
       // Skill range: emit the value verbatim (a numeric level like 0-15, or a level name).
       // Quote only if it carries whitespace (e.g. "High Master") so the token stays valid.
       const emitSkill = quoteIfSpaced;
@@ -8664,7 +8793,11 @@ const state = {
       }
       if (tabId === 'place') {
         // Grammar: TYPES[/LABEL][{PROPS}][:CONFIG][(WxH)] where CONFIG leads with an op (=/-/+).
-        const m = /^([a-zA-Z]+)(?:\/([A-Za-z0-9_]+))?(?:\{((?:"(?:[^"\\]|\\.)*"|[^}])*)\})?(?::([^(]*))?(?:\((\d+)x(\d+)\))?$/.exec(token);
+        // LABEL must start with a letter to match buildLabelSuffix's emit constraint: a
+        // digit-leading label (from a hand-authored blueprint) that this regex used to accept
+        // was silently dropped on repaint, so reject it here and let the eyedropper grab the
+        // whole token verbatim instead (no decompose, no loss).
+        const m = /^([a-zA-Z]+)(?:\/([A-Za-z][A-Za-z0-9_]*))?(?:\{((?:"(?:[^"\\]|\\.)*"|[^}])*)\})?(?::([^(]*))?(?:\((\d+)x(\d+)\))?$/.exec(token);
         if (!m) return false;
         const [, types, label='', propsStr='', config='', pw='', ph=''] = m;
         state.selectedToolByTab[tabId] = types;
@@ -8709,7 +8842,11 @@ const state = {
         // are one letter each, NOT greedy [a-zA-Z]+. A greedy first group swallowed a braceless
         // base + overlap (base `n` + overlay `t{active=false}` composes to `nt{active=false}`) as
         // one fake type "nt" with the overlay's props, so Alt+click lost the stack the grid shows.
-        const m = /^([a-zA-Z])(?:\/([A-Za-z0-9_]+))?(?:\{((?:"(?:[^"\\]|\\.)*"|[^}])*)\})?((?:[a-zA-Z](?:\/[A-Za-z0-9_]+)?(?:\{(?:"(?:[^"\\]|\\.)*"|[^}])*\})?)*)(?:\((\d+)x(\d+)\))?$/.exec(token);
+        // The PRIMARY label must start with a letter (buildLabelSuffix's emit constraint), so a
+        // digit-leading primary label round-trips verbatim rather than being silently dropped on
+        // repaint. The OVERLAY labels stay `[A-Za-z0-9_]+`: the overlay is re-emitted verbatim
+        // from the zone-overlay field (never through buildLabelSuffix), so it is not lossy.
+        const m = /^([a-zA-Z])(?:\/([A-Za-z][A-Za-z0-9_]*))?(?:\{((?:"(?:[^"\\]|\\.)*"|[^}])*)\})?((?:[a-zA-Z](?:\/[A-Za-z0-9_]+)?(?:\{(?:"(?:[^"\\]|\\.)*"|[^}])*\})?)*)(?:\((\d+)x(\d+)\))?$/.exec(token);
         if (!m) return false;
         const [, types, label='', propsStr='', overlay='', ew='', eh=''] = m;
         state.selectedToolByTab[tabId] = types;
@@ -9165,7 +9302,7 @@ const state = {
         }
       });
       setInterval(writeAutosave, 30000);
-      if (restoredSession) markAutosaved();
+      if (restoredSession) markAutosaved(restoredSession.savedAt);
       // Initialize z-label and ensure first render uses active z
       ensureGrids();
       updateZLabel();
